@@ -134,6 +134,14 @@ class InvestigationFeatureBuilder:
         return record
 
     def _with_synthetic_signals(self, record: EnrichedTransactionRecord) -> EnrichedTransactionRecord:
+        if not record.device_id:
+            record.device_id = f"DEV-{abs(hash(record.account_id)) % 100000:05d}"
+        if not record.device_type:
+            token = str(record.device_id).lower()
+            if "mobile" in token or token.startswith("dev-"):
+                record.device_type = "MOBILE"
+            else:
+                record.device_type = "DESKTOP"
         # Deterministic synthetic IP address from transaction id.
         record.ip_address = _synthetic_ip_for_key(record.transaction_id)
 

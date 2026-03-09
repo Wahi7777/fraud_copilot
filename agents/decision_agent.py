@@ -30,26 +30,31 @@ class DecisionAgent(BaseInvestigationAgent):
         items_list: List[EvidenceItem] = list(evidence_items)
         breakdown: ScoreBreakdown = self.scoring_engine.score(items_list)
 
-        inferred_typology = typology or "Generic Fraud"
+        inferred_typology = typology or "Unknown / Mixed Pattern"
         recommendation = self._recommendation_for_band(breakdown.risk_band)
         rationale = self._build_rationale(inferred_typology, breakdown)
+        reason_points = [
+            f"Deterministic fallback score {breakdown.risk_score:.2f}",
+            f"Triggered fallback signals: {', '.join(breakdown.triggered_signals) if breakdown.triggered_signals else 'none'}",
+        ]
 
         return {
             "agent": self.name,
             "risk_score": breakdown.risk_score,
-            "typology": inferred_typology,
+            "fraud_typology": inferred_typology,
             "recommendation": recommendation,
-            "confidence": breakdown.confidence,
+            "decision_confidence": breakdown.confidence,
+            "decision_reason": reason_points,
             "decision_rationale": rationale,
         }
 
     @staticmethod
     def _recommendation_for_band(risk_band: str) -> str:
         if risk_band == "high":
-            return "Escalate immediately and consider account and beneficiary freeze."
+            return "Decline"
         if risk_band == "medium":
-            return "Prioritise manual review within SLA and monitor closely."
-        return "Monitor with no immediate blocking action."
+            return "Escalate"
+        return "Clear"
 
     @staticmethod
     def _build_rationale(typology: str, breakdown: ScoreBreakdown) -> str:

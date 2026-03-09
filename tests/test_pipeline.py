@@ -125,11 +125,16 @@ def test_successful_end_to_end_investigation():
     inv = output["investigation"]
     assert inv["transaction_id"] == tx.transaction_id
     assert inv["status"] == InvestigationStatus.COMPLETED.value
+    assert isinstance(inv.get("typology_definition"), str)
+    assert isinstance(inv.get("typology_reason"), list)
 
     decision = output["decision"]
     assert 0.0 <= decision["risk_score"] <= 0.99
     assert isinstance(decision["recommendation"], str)
-    assert isinstance(decision["decision_rationale"], str)
+    assert isinstance(decision["decision_reason"], list)
+    assert isinstance(decision["decision_confidence"], float)
+    assert isinstance(decision["fraud_typology"], str)
+    assert isinstance(decision["typology_definition"], str)
 
     evidence = output["evidence"]
     assert isinstance(evidence, list)

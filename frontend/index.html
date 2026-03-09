@@ -185,6 +185,38 @@
         #modal-recommendation.is-investigating {
             animation: recommendationPulse 1.8s ease-in-out infinite;
         }
+        .typology-tooltip-wrap {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+        }
+        .typology-tooltip {
+            position: absolute;
+            left: 0;
+            top: calc(100% + 8px);
+            width: 320px;
+            max-width: 80vw;
+            background: #111827;
+            color: #F9FAFB;
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-size: 12px;
+            line-height: 1.4;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+            z-index: 20;
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(4px);
+            transition: opacity 0.16s ease, transform 0.16s ease;
+        }
+        .typology-tooltip-wrap:hover .typology-tooltip,
+        .typology-tooltip-wrap:focus-within .typology-tooltip {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        .meta-chip {
+            min-width: 140px;
+        }
     </style>
 </head>
 <body class="bg-background text-text font-sans antialiased min-h-screen flex flex-col overflow-x-hidden">
@@ -395,7 +427,7 @@
                             <th scope="col" class="px-6 py-3 font-medium">Amount</th>
                             <th scope="col" class="px-6 py-3 font-medium">Risk Score</th>
                             <th scope="col" class="px-6 py-3 font-medium">Timestamp</th>
-                            <th scope="col" class="px-6 py-3 font-medium">Status</th>
+                            <th scope="col" class="px-6 py-3 font-medium">Recommendation</th>
                             <th scope="col" class="px-6 py-3 font-medium text-right">Action</th>
                         </tr>
                     </thead>
@@ -424,7 +456,7 @@
                             </td>
                             <td class="px-6 py-4">06 Mar 2026 14:02</td>
                             <td class="px-6 py-4">
-                                <span class="bg-red-100 text-highRisk text-xs font-medium px-2.5 py-0.5 rounded border border-red-200">Open</span>
+                                <span class="bg-red-100 text-highRisk text-xs font-medium px-2.5 py-0.5 rounded border border-red-200">Decline</span>
                             </td>
                             <td class="px-6 py-4 text-right">
                                 <button class="investigate-btn text-primary hover:text-blue-700 font-medium text-xs border border-blue-200 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded transition-colors" onclick="event.stopPropagation(); document.getElementById('investigation-modal').classList.remove('hidden'); document.body.classList.add('modal-open');">
@@ -533,7 +565,7 @@
                             </td>
                             <td class="px-6 py-4">06 Mar 2026 13:45</td>
                             <td class="px-6 py-4">
-                                <span class="bg-orange-100 text-mediumRisk text-xs font-medium px-2.5 py-0.5 rounded border border-orange-200">Reviewing</span>
+                                <span class="bg-orange-100 text-mediumRisk text-xs font-medium px-2.5 py-0.5 rounded border border-orange-200">Escalate</span>
                             </td>
                             <td class="px-6 py-4 text-right">
                                 <button class="investigate-btn text-primary hover:text-blue-700 font-medium text-xs border border-blue-200 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded transition-colors">
@@ -566,7 +598,7 @@
                             </td>
                             <td class="px-6 py-4">06 Mar 2026 13:12</td>
                             <td class="px-6 py-4">
-                                <span class="bg-gray-100 text-secondaryText text-xs font-medium px-2.5 py-0.5 rounded border border-gray-200">Pending</span>
+                                <span class="bg-green-100 text-green-700 text-xs font-medium px-2.5 py-0.5 rounded border border-green-200">Clear</span>
                             </td>
                             <td class="px-6 py-4 text-right">
                                 <button class="investigate-btn text-primary hover:text-blue-700 font-medium text-xs border border-blue-200 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded transition-colors">
@@ -599,7 +631,7 @@
                             </td>
                             <td class="px-6 py-4">06 Mar 2026 12:30</td>
                             <td class="px-6 py-4">
-                                <span class="bg-red-100 text-highRisk text-xs font-medium px-2.5 py-0.5 rounded border border-red-200">Open</span>
+                                <span class="bg-red-100 text-highRisk text-xs font-medium px-2.5 py-0.5 rounded border border-red-200">Decline</span>
                             </td>
                             <td class="px-6 py-4 text-right">
                                 <button class="investigate-btn text-primary hover:text-blue-700 font-medium text-xs border border-blue-200 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded transition-colors">
@@ -641,7 +673,7 @@
                                 <h3 class="text-lg font-bold text-text leading-6" id="modal-title">Alert #TXN-849223</h3>
                                 <span id="modal-risk-pill" class="bg-red-100 text-highRisk text-xs font-bold px-2 py-0.5 rounded uppercase tracking-wide">High Risk 0.86</span>
                             </div>
-                            <div id="modal-meta" class="mt-1 flex items-center gap-4 text-sm text-secondaryText">
+                            <div id="modal-meta" class="mt-2 flex flex-wrap items-start gap-x-6 gap-y-2 text-sm text-secondaryText">
                                 <span class="flex items-center gap-1"><i class="fa-regular fa-user"></i> CUST-48391</span>
                                 <span class="flex items-center gap-1"><i class="fa-solid fa-wallet"></i> ACC-Checking-004</span>
                                 <span class="flex items-center gap-1"><i class="fa-regular fa-clock"></i> 06 Mar 2026 14:02</span>
@@ -672,15 +704,23 @@
                         <!-- Case Summary -->
                         <div class="lg:col-span-2 bg-white rounded-lg border border-border p-5 shadow-sm">
                             <h4 class="text-sm font-semibold text-text uppercase tracking-wide mb-4 border-b border-border pb-2">Case Summary Analysis</h4>
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-y-4 gap-x-8 text-sm">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-y-6 gap-x-10 text-sm">
                                 <div>
                                     <span class="block text-secondaryText text-xs mb-1">Alert Trigger</span>
                                     <span id="modal-alert-trigger" class="font-medium text-text">High Velocity Outbound Transfer</span>
                                 </div>
                                 <div>
                                     <span class="block text-secondaryText text-xs mb-1">Fraud Typology</span>
-                                    <span id="modal-typology-pill" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">
-                                        Account Takeover
+                                    <span class="typology-tooltip-wrap">
+                                        <span id="modal-typology-pill" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">
+                                            Account Takeover
+                                        </span>
+                                        <button type="button" aria-label="Fraud typology definition" class="ml-1 text-secondaryText hover:text-text">
+                                            <i class="fa-solid fa-circle-info text-xs"></i>
+                                        </button>
+                                        <span id="modal-typology-tooltip" class="typology-tooltip">
+                                            Suspicious transaction pattern detected that deviates from normal account behavior.
+                                        </span>
                                     </span>
                                     <span id="modal-typology-secondary" class="hidden inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800 ml-1">
                                         

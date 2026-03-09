@@ -119,19 +119,35 @@ def test_typology_and_decision_agents_output_schema():
     ]
 
     t_agent = TypologyAgent()
-    t_payload = t_agent.run(ev)
+    t_payload = t_agent.run(
+        ev,
+        triggered_signals=["new_device_indicator", "device_reuse_risk", "geo_anomaly", "ip_risk"],
+        signal_breakdown={"new_device_indicator": 0.04, "device_reuse_risk": 0.05, "geo_anomaly": 0.04, "ip_risk": 0.04},
+    )
 
     assert t_payload["agent"] == "TypologyAgent"
-    assert t_payload["typology"] in {"Account Takeover", "Mule Network", "Generic Fraud"}
+    assert t_payload["fraud_typology"] in {
+        "Potential Mule Transfer",
+        "Velocity Fraud",
+        "Account Takeover",
+        "Beneficiary Risk",
+        "Transaction Anomaly",
+        "Structured Cash-Out Pattern",
+        "Unknown / Mixed Pattern",
+    }
+    assert isinstance(t_payload["typology_definition"], str)
+    assert isinstance(t_payload["typology_reason"], list)
 
     d_agent = DecisionAgent()
-    d_payload = d_agent.run(ev, typology=t_payload["typology"])
+    d_payload = d_agent.run(ev, typology=t_payload["fraud_typology"])
 
-    for key in ("agent", "risk_score", "typology", "recommendation", "confidence", "decision_rationale"):
+    for key in ("agent", "risk_score", "fraud_typology", "recommendation", "decision_confidence", "decision_reason", "decision_rationale"):
         assert key in d_payload
 
     assert isinstance(d_payload["risk_score"], float)
     assert 0.0 <= d_payload["risk_score"] <= 0.99
-    assert isinstance(d_payload["confidence"], float)
+    assert d_payload["recommendation"] in {"Clear", "Escalate", "Decline"}
+    assert isinstance(d_payload["decision_confidence"], float)
+    assert isinstance(d_payload["decision_reason"], list)
     assert isinstance(d_payload["decision_rationale"], str)
 

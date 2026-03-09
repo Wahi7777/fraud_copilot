@@ -1,6 +1,7 @@
 (() => {
   const API_BASE = window.API_BASE || "http://127.0.0.1:7861";
   const DEV_FALLBACK_MODAL = Boolean(window.DEV_FALLBACK_MODAL);
+  const DEV_DEBUG_UI = Boolean(window.DEV_DEBUG_UI);
 
   const alertsTbody = document.getElementById("alerts-tbody");
   const alertsCountEl = document.getElementById("alerts-count");
@@ -39,6 +40,7 @@
   const modalMeta = document.getElementById("modal-meta");
   const modalAlertTrigger = document.getElementById("modal-alert-trigger");
   const modalTypologyPill = document.getElementById("modal-typology-pill");
+  const modalTypologyTooltip = document.getElementById("modal-typology-tooltip");
   const modalAmount = document.getElementById("modal-amount");
   const modalDeviation = document.getElementById("modal-deviation");
   const modalRecommendation = document.getElementById("modal-recommendation");
@@ -70,6 +72,22 @@
     "typology_agent",
     "decision_agent",
   ];
+  const TYPOLOGY_DEFINITION_FALLBACK = {
+    "Potential Mule Transfer":
+      "Funds appear to be routed through intermediary beneficiary accounts in a pattern consistent with mule-network behavior.",
+    "Velocity Fraud":
+      "Rapid transaction activity in a short window suggests unusually high transfer velocity inconsistent with typical account behavior.",
+    "Account Takeover":
+      "Device, network, and location telemetry indicate possible unauthorized account access and control.",
+    "Beneficiary Risk":
+      "The destination beneficiary shows elevated risk based on historical or network-linked fraud indicators.",
+    "Transaction Anomaly":
+      "The transaction deviates from normal account behavior but lacks a stronger, specific fraud typology pattern.",
+    "Structured Cash-Out Pattern":
+      "Transfer and cash-out sequence suggests staged movement of funds for rapid extraction.",
+    "Unknown / Mixed Pattern":
+      "Suspicious transaction pattern detected that deviates from normal account behavior.",
+  };
 
   function safe(fn, fallback = null) {
     try {
@@ -147,10 +165,10 @@
       stopRecommendationLoadingUI();
       if (modalRecommendation) modalRecommendation.textContent = message;
     }
-    if (modalDeviceType) modalDeviceType.textContent = "-";
-    if (modalLocation) modalLocation.textContent = "-";
-    if (modalDeviceFingerprint) modalDeviceFingerprint.textContent = "-";
-    if (modalIpAddress) modalIpAddress.textContent = "-";
+    if (modalDeviceType) modalDeviceType.textContent = "Not Available";
+    if (modalLocation) modalLocation.textContent = "Not Available";
+    if (modalDeviceFingerprint) modalDeviceFingerprint.textContent = "Not Available";
+    if (modalIpAddress) modalIpAddress.textContent = "Not Available";
     if (modalSignals) {
       modalSignals.innerHTML = '<div class="bg-white p-4 rounded-lg border border-border shadow-sm text-sm text-secondaryText">Loading signals...</div>';
     }
@@ -212,6 +230,82 @@
     return d.toLocaleString();
   }
 
+  function formatTimestampStacked(ts) {
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return { date: "Not Available", time: "" };
+    const date = d.toLocaleDateString(undefined, {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    });
+    const time = d.toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+    return { date, time };
+  }
+
+  function displayOrNA(value) {
+    const text = String(value ?? "").trim();
+    return text ? text : "Not Available";
+  }
+
+  function deriveReasonBullets(result, caseSummary = {}, decision = {}) {
+    const fromDrivers = Array.isArray(caseSummary.risk_drivers) ? caseSummary.risk_drivers : [];
+    if (fromDrivers.length) return fromDrivers.slice(0, 4);
+    const listReasons = result?.decision_reason || decision?.decision_reason;
+    if (Array.isArray(listReasons) && listReasons.length) {
+      return listReasons.map((x) => String(x)).filter(Boolean).slice(0, 5);
+    }
+
+    const raw = String(result?.decision_reason || decision?.decision_reason || decision?.decision_rationale || "").trim();
+    if (!raw) return ["Signals indicate elevated fraud risk; analyst review recommended."];
+
+    const cleaned = raw
+      .replace(/\{.*\}/g, "")
+      .replace(/base=.*$/i, "")
+      .replace(/votes=.*$/i, "")
+      .replace(/override=.*$/i, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const parts = cleaned
+      .split(/[;|]/)
+      .map((p) => p.trim())
+      .filter((p) => p && !p.includes("=") && p.length > 8);
+    return (parts.length ? parts : [cleaned]).slice(0, 4);
+  }
+
+  function deriveRecommendedActions(result, decision = {}, recommendation = "Escalate") {
+    const fromBackend = result?.recommended_actions || decision?.recommended_actions;
+    if (Array.isArray(fromBackend) && fromBackend.length) {
+      return fromBackend.map((x) => String(x)).filter(Boolean);
+    }
+    const rec = normalizeRecommendation(recommendation);
+    if (rec === "Clear") {
+      return [
+        "Allow the transaction",
+        "Record investigation outcome",
+        "Close the case as false positive",
+      ];
+    }
+    if (rec === "Decline") {
+      return [
+        "Block the transaction",
+        "Place a temporary hold on the sender account",
+        "Investigate linked beneficiary accounts",
+        "Escalate to financial crime investigation if suspicious activity continues",
+      ];
+    }
+    return [
+      "Perform enhanced customer verification",
+      "Review recent transaction history",
+      "Investigate beneficiary account activity",
+      "Escalate to senior fraud analyst if risk persists",
+    ];
+  }
+
   function normalizeSignalSeverity(value) {
     const token = String(value || "").toLowerCase();
     if (token === "high" || token === "critical") return "high";
@@ -227,45 +321,47 @@
     return "LOW";
   }
 
-  function mapRiskBandToRecommendation(riskBand) {
-    if (riskBand === "CRITICAL") {
+  function normalizeRecommendation(value) {
+    const token = String(value || "").trim().toLowerCase();
+    if (token === "clear") return "Clear";
+    if (token === "decline") return "Decline";
+    if (token === "escalate") return "Escalate";
+    if (token.includes("decline")) return "Decline";
+    if (token.includes("clear")) return "Clear";
+    if (token.includes("escalate")) return "Escalate";
+    return "Escalate";
+  }
+
+  function recommendationPlan(recommendation) {
+    const normalized = normalizeRecommendation(recommendation);
+    if (normalized === "Decline") {
       return {
-        disposition: "Freeze",
-        recommendation: "Freeze account and escalate immediately due to critical fraud risk.",
-        primaryActionLabel: "Freeze Account",
-        primaryActionIcon: "fa-snowflake",
-      };
-    }
-    if (riskBand === "HIGH") {
-      return {
-        disposition: "Decline",
-        recommendation: "Decline transaction and escalate case due to high fraud risk.",
+        recommendation: normalized,
         primaryActionLabel: "Decline Transaction",
         primaryActionIcon: "fa-ban",
       };
     }
-    if (riskBand === "MEDIUM") {
+    if (normalized === "Clear") {
       return {
-        disposition: "Hold",
-        recommendation: "Hold transaction and trigger step-up authentication before release.",
-        primaryActionLabel: "Step-Up Auth",
-        primaryActionIcon: "fa-user-shield",
+        recommendation: normalized,
+        primaryActionLabel: "Close Case",
+        primaryActionIcon: "fa-check",
       };
     }
     return {
-      disposition: "Closed",
-      recommendation: "Approve transaction and close case with monitoring.",
-      primaryActionLabel: "Close Case",
-      primaryActionIcon: "fa-check",
+      recommendation: "Escalate",
+      primaryActionLabel: "Escalate Case",
+      primaryActionIcon: "fa-arrow-up-right-dots",
     };
   }
 
-  function applyPrimaryActionUI(riskBand, plan) {
+  function applyPrimaryActionUI(recommendation, plan) {
     if (!modalActionPrimary || !modalFooterPrimary) return;
+    const rec = normalizeRecommendation(recommendation);
     const bandClass =
-      riskBand === "CRITICAL" || riskBand === "HIGH"
+      rec === "Decline"
         ? "bg-highRisk hover:bg-red-600"
-        : riskBand === "MEDIUM"
+        : rec === "Escalate"
         ? "bg-amber-500 hover:bg-amber-600"
         : "bg-green-600 hover:bg-green-700";
     modalActionPrimary.className = `text-white ${bandClass} border border-transparent px-4 py-2 rounded-lg text-sm font-medium shadow-sm transition-colors flex items-center`;
@@ -492,16 +588,7 @@
   }
 
   function mapRecommendationToQueueStatus(recommendation) {
-    const token = String(recommendation || "").toLowerCase();
-    if (token.includes("decline_transaction")) return "Decline";
-    if (token.includes("hold_and_review")) return "Hold";
-    if (token.includes("step_up_auth")) return "Hold";
-    if (token.includes("step_up_authentication")) return "Hold";
-    if (token.includes("freeze_account")) return "Freeze";
-    if (token.includes("escalate_case")) return "Escalate";
-    if (token.includes("mark_false_positive")) return "False Positive";
-    if (token.includes("close_case")) return "Closed";
-    return "Closed";
+    return normalizeRecommendation(recommendation);
   }
 
   function mapRiskLevelToBadgeClass(riskLevel) {
@@ -512,17 +599,25 @@
     return "bg-gray-100 text-secondaryText border-gray-200";
   }
 
+  function typologyDefinitionFor(result, decision, inv, typology) {
+    return (
+      result.typology_definition ||
+      decision.typology_definition ||
+      inv.typology_definition ||
+      TYPOLOGY_DEFINITION_FALLBACK[String(typology || "").trim()] ||
+      TYPOLOGY_DEFINITION_FALLBACK["Unknown / Mixed Pattern"]
+    );
+  }
+
   function statusBadgeClasses(statusText) {
     const value = String(statusText || "").toLowerCase();
-    if (value.includes("decline") || value.includes("freeze") || value.includes("escalate")) {
+    if (value.includes("decline")) {
       return "bg-red-100 text-highRisk border-red-200";
     }
-    if (value.includes("hold")) return "bg-amber-100 text-amber-700 border-amber-200";
-    if (value.includes("false positive")) return "bg-amber-100 text-amber-700 border-amber-200";
-    if (value.includes("closed")) {
+    if (value.includes("escalate") || value.includes("review")) return "bg-amber-100 text-amber-700 border-amber-200";
+    if (value.includes("clear") || value.includes("closed") || value.includes("new")) {
       return "bg-green-100 text-green-700 border-green-200";
     }
-    if (value.includes("failed")) return "bg-red-100 text-highRisk border-red-200";
     return "bg-gray-100 text-secondaryText border-gray-200";
   }
 
@@ -535,17 +630,15 @@
 
   function normalizeAlert(item) {
     const normalizedScore = Number(item.final_risk_score ?? item.risk_score ?? 0);
-    const mappedQueueStatus =
-      item.investigation_status === "investigated"
-        ? mapRiskBandToRecommendation(getRiskBand(normalizedScore)).disposition
-        : mapRecommendationToQueueStatus(
-            item.queue_status ||
-              item.final_recommendation ||
-              item?.decision?.recommended_action ||
-              item?.decision?.action ||
-              item?.decision?.recommendation ||
-              item.status
-          );
+    const mappedRecommendation = mapRecommendationToQueueStatus(
+      item.recommendation ||
+        item.final_recommendation ||
+        item?.decision?.recommendation ||
+        item.queue_status
+    );
+    const mappedWorkflowStatus =
+      item.workflow_status ||
+      (item.investigation_status === "investigated" ? "In Review" : "New");
     return {
       ...item,
       investigation_status: item.investigation_status || "new",
@@ -555,7 +648,9 @@
       final_recommendation: item.final_recommendation || null,
       has_cached_investigation: Boolean(item.has_cached_investigation),
       last_investigation_id: item.last_investigation_id || null,
-      queue_status: item.investigation_status === "investigated" ? mappedQueueStatus : item.queue_status || item.status || "Pending",
+      recommendation: mappedRecommendation,
+      workflow_status: mappedWorkflowStatus,
+      queue_status: mappedRecommendation,
     };
   }
 
@@ -675,8 +770,9 @@
       tr.dataset.alertId = item.alert_id || item.transaction_id || `row-${idx}`;
       tr.dataset.investigationStatus = item.investigation_status;
       const btnLabel = investigateButtonLabel(item.investigation_status);
-      const statusLabel = item.queue_status || item.status || "Pending";
-      const badgeClasses = statusBadgeClasses(statusLabel);
+      const recommendationLabel = normalizeRecommendation(item.recommendation || item.queue_status);
+      const workflowLabel = item.workflow_status || "New";
+      const badgeClasses = statusBadgeClasses(recommendationLabel);
       tr.innerHTML = `
         <td class="px-6 py-4 font-medium text-text">
           <div class="flex items-center gap-2">
@@ -708,7 +804,8 @@
         </td>
         <td class="px-6 py-4">${formatTimestamp(item.timestamp)}</td>
         <td class="px-6 py-4">
-          <span class="${badgeClasses} text-xs font-medium px-2.5 py-0.5 rounded border">${statusLabel}</span>
+          <span class="${badgeClasses} text-xs font-medium px-2.5 py-0.5 rounded border">${recommendationLabel}</span>
+          <div class="text-[11px] text-secondaryText mt-1">${workflowLabel}</div>
         </td>
         <td class="px-6 py-4 text-right">
           <button ${item.investigation_status === "investigating" ? "disabled" : ""} class="investigate-btn pointer-events-auto relative z-10 text-primary hover:text-blue-700 font-medium text-xs border border-blue-200 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded transition-colors ${item.investigation_status === "investigating" ? "opacity-60 cursor-not-allowed" : ""}">
@@ -865,22 +962,18 @@
       modalAgentTrace.innerHTML = "";
       return;
     }
-    const labels = agentTrace.map((s) => String(s.agent || "").replaceAll("_", " ").replace(/\b\w/g, (c) => c.toUpperCase()));
-    const flow = labels.join(" \u2192 ");
     const chips = agentTrace
       .map((step) => {
         const label = String(step.agent || "agent")
           .replaceAll("_", " ")
           .replace(/\b\w/g, (c) => c.toUpperCase());
-        const ok = String(step.status || "").toLowerCase() === "completed";
-        return `<span class="inline-flex items-center px-2 py-0.5 rounded border text-[11px] mr-1 mb-1 ${ok ? "bg-green-100 text-green-700 border-green-200" : "bg-amber-100 text-amber-700 border-amber-200"}">${label} ${ok ? "\u2713" : ""}</span>`;
+        return agentStatusPill(label, step.status || "completed");
       })
       .join("");
     modalAgentTrace.classList.remove("hidden");
     modalAgentTrace.innerHTML = `
-      <div class="text-[11px] font-semibold text-text mb-1">Agents used</div>
-      <div class="text-[11px] text-secondaryText mb-1">${flow}</div>
-      <div>${chips}</div>
+      <div class="text-[11px] font-semibold text-text mb-1">Analysis completed by</div>
+      <div class="flex flex-wrap gap-2">${chips}</div>
     `;
   }
 
@@ -888,6 +981,34 @@
     return String(agent || "agent")
       .replaceAll("_", " ")
       .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  function normalizeAgentStatus(status) {
+    const token = String(status || "").toLowerCase();
+    if (token === "completed" || token === "success" || token === "done") return "completed";
+    if (token === "failed" || token === "error") return "failed";
+    if (token === "running" || token === "started" || token === "active" || token === "pending") return "running";
+    return "running";
+  }
+
+  function agentStatusPill(name, status) {
+    const normalizedStatus = normalizeAgentStatus(status);
+    const styleByStatus = {
+      completed: {
+        cls: "bg-[#E6F6EC] border-[#2ECC71] text-[#145A32]",
+        icon: "✓",
+      },
+      running: {
+        cls: "bg-[#FFF5E6] border-[#F39C12] text-[#8A4B00]",
+        icon: "⟳",
+      },
+      failed: {
+        cls: "bg-[#FDECEA] border-[#E74C3C] text-[#7A1F1F]",
+        icon: "⚠",
+      },
+    };
+    const selected = styleByStatus[normalizedStatus] || styleByStatus.running;
+    return `<span class="inline-flex items-center px-2.5 py-1 rounded-full border text-[11px] font-semibold ${selected.cls}">${selected.icon} ${name}</span>`;
   }
 
   function initializeAgentProgressUI() {
@@ -905,23 +1026,14 @@
     const line = rows.map((r) => humanizeAgent(r.agent)).join(" \u2192 ");
     const chips = rows
       .map((r) => {
-        const status = String(r.status || "pending").toLowerCase();
-        const style =
-          status === "completed"
-            ? "bg-green-100 text-green-700 border-green-200"
-            : status === "started" || status === "active"
-            ? "bg-blue-100 text-primary border-blue-200"
-            : "bg-gray-100 text-secondaryText border-gray-200";
-        const icon = status === "completed" ? "\u2713" : status === "started" || status === "active" ? "\u25CF" : "\u2022";
-        const summary = r.summary ? ` - ${r.summary}` : "";
-        return `<div class="mb-1"><span class="inline-flex items-center px-2 py-0.5 rounded border text-[11px] ${style}">${humanizeAgent(r.agent)} ${icon}</span><span class="ml-1 text-[11px] text-secondaryText">${summary}</span></div>`;
+        return agentStatusPill(humanizeAgent(r.agent), r.status);
       })
       .join("");
     modalAgentTrace.classList.remove("hidden");
     modalAgentTrace.innerHTML = `
-      <div class="text-[11px] font-semibold text-text mb-1">Agents used</div>
+      <div class="text-[11px] font-semibold text-text mb-1">Analysis completed by</div>
       <div class="text-[11px] text-secondaryText mb-2">${line}</div>
-      <div>${chips}</div>
+      <div class="flex flex-wrap gap-2">${chips}</div>
     `;
   }
 
@@ -966,14 +1078,17 @@
         return;
       }
       investigationsById.set(alertId, resp.json.data);
-      const mappedStatus = mapRiskBandToRecommendation(
-        getRiskBand(resp.json.data?.risk_score ?? alertsById.get(alertId)?.risk_score ?? 0)
-      ).disposition;
+      const mappedRecommendation = normalizeRecommendation(
+        resp.json.data?.recommendation || resp.json.data?.decision?.recommendation
+      );
+      const mappedWorkflow = resp.json.data?.workflow_status || "In Review";
       setAlertState(alertId, {
         investigation_status: "investigated",
         has_cached_investigation: true,
-        queue_status: mappedStatus,
-        status: mappedStatus,
+        recommendation: mappedRecommendation,
+        workflow_status: mappedWorkflow,
+        queue_status: mappedRecommendation,
+        status: mappedWorkflow,
       });
       populateModal(alertItem, resp.json.data);
     } catch (e) {
@@ -985,7 +1100,7 @@
   async function runInvestigationForAlert(alertId) {
     const alertItem = alertsById.get(alertId);
     if (!alertItem) return;
-    setAlertState(alertId, { investigation_status: "investigating", queue_status: "Investigating" });
+    setAlertState(alertId, { investigation_status: "investigating", workflow_status: "In Review", recommendation: "Escalate", queue_status: "Escalate" });
     openModalLoadingForInvestigation();
     initializeAgentProgressUI();
 
@@ -1016,7 +1131,7 @@
         if (body.status === "failed") {
           const backendError = body.error || "Unknown backend error";
           const backendDetails = body.details || "No details provided";
-          setAlertState(alertId, { investigation_status: "failed", queue_status: "Failed" });
+          setAlertState(alertId, { investigation_status: "failed", workflow_status: "In Review", recommendation: "Escalate", queue_status: "Escalate" });
           setModalErrorState(`${backendError} — ${backendDetails}`);
           return;
         }
@@ -1031,24 +1146,27 @@
       const completedAt = result.investigation_completed_at || new Date().toISOString();
       investigationsById.set(alertId, result);
       const finalRisk = Number(result.risk_score ?? alertItem.risk_score ?? 0);
-      const queueStatus = mapRiskBandToRecommendation(getRiskBand(finalRisk)).disposition;
+      const recommendation = normalizeRecommendation(result.recommendation || result.decision?.recommendation);
+      const workflowStatus = result.workflow_status || "In Review";
       setAlertState(alertId, {
         investigation_status: "investigated",
         investigation_completed_at: completedAt,
         timestamp: completedAt,
         investigation_summary: result.case_summary?.typology || result.decision?.decision_rationale || null,
         final_risk_score: finalRisk,
-        final_recommendation: result.decision?.recommendation || null,
+        final_recommendation: recommendation,
         has_cached_investigation: true,
-        queue_status: queueStatus,
-        status: queueStatus,
+        recommendation,
+        workflow_status: workflowStatus,
+        queue_status: recommendation,
+        status: workflowStatus,
         risk_score: finalRisk,
         risk_level: deriveRiskLevel(finalRisk),
       });
       populateModal(alertsById.get(alertId) || alertItem, result);
     } catch (e) {
       console.error("[UI] investigation failed", e);
-      setAlertState(alertId, { investigation_status: "failed", queue_status: "Failed" });
+      setAlertState(alertId, { investigation_status: "failed", workflow_status: "In Review", recommendation: "Escalate", queue_status: "Escalate" });
       if (DEV_FALLBACK_MODAL) {
         populateModal(alertItem, {
           case_summary: {
@@ -1090,15 +1208,21 @@
     const beneficiary = result.beneficiary_analysis || {};
     renderAgentTrace(result.agent_trace);
     if (modalLlmDebug) {
-      const provider = result.llm_provider_used || "unknown";
-      const model = result.model_used || "unknown";
-      modalLlmDebug.classList.remove("hidden");
-      modalLlmDebug.textContent = `LLM provider: ${provider} | Model: ${model}`;
+      if (DEV_DEBUG_UI) {
+        const provider = result.llm_provider_used || "unknown";
+        const model = result.model_used || "unknown";
+        modalLlmDebug.classList.remove("hidden");
+        modalLlmDebug.textContent = `LLM provider: ${provider} | Model: ${model}`;
+      } else {
+        modalLlmDebug.classList.add("hidden");
+        modalLlmDebug.textContent = "";
+      }
     }
 
     const riskScore = result.risk_score ?? decision.risk_score ?? inv.risk_score ?? alertItem.risk_score ?? 0;
     const riskBand = getRiskBand(riskScore);
-    const plan = mapRiskBandToRecommendation(riskBand);
+    const resolvedRecommendation = normalizeRecommendation(result.recommendation || decision.recommendation);
+    const plan = recommendationPlan(resolvedRecommendation);
     const riskLabel = `${riskBand} RISK`;
     const riskBadgeClass = mapRiskLevelToBadgeClass(riskLabel);
 
@@ -1107,19 +1231,31 @@
       modalRiskPill.textContent = `${riskLabel} ${riskScore.toFixed(2)}`;
       modalRiskPill.className = `text-xs font-bold px-2 py-0.5 rounded uppercase tracking-wide ${riskBadgeClass}`;
     }
-    applyPrimaryActionUI(riskBand, plan);
+    applyPrimaryActionUI(plan.recommendation, plan);
 
     if (modalMeta) {
       const modalTimestamp = result.investigation_completed_at || result.timestamp || alertItem.timestamp;
+      const workflowStatus = result.workflow_status || alertItem.workflow_status || "In Review";
+      const ts = formatTimestampStacked(modalTimestamp);
       modalMeta.innerHTML = `
-        <span class="flex items-center gap-1"><i class="fa-regular fa-user"></i> ${result.customer_id || inv.account_id || alertItem.account_id || "-"}</span>
-        <span class="flex items-center gap-1"><i class="fa-solid fa-wallet"></i> ${alertItem.beneficiary_id || "-"}</span>
-        <span class="flex items-center gap-1"><i class="fa-regular fa-clock"></i> ${formatTimestamp(modalTimestamp)}</span>
+        <span class="meta-chip inline-flex items-start gap-2"><i class="fa-regular fa-user mt-0.5"></i><span>${displayOrNA(result.customer_id || inv.account_id || alertItem.account_id)}</span></span>
+        <span class="meta-chip inline-flex items-start gap-2"><i class="fa-solid fa-wallet mt-0.5"></i><span>${displayOrNA(alertItem.beneficiary_id)}</span></span>
+        <span class="meta-chip inline-flex items-start gap-2"><i class="fa-regular fa-clock mt-0.5"></i><span class="leading-tight"><div>${ts.date}</div><div>${ts.time}</div></span></span>
+        <span class="meta-chip inline-flex items-start gap-2"><i class="fa-regular fa-folder-open mt-0.5"></i><span>${displayOrNA(workflowStatus)}</span></span>
       `;
     }
 
     if (modalAlertTrigger) modalAlertTrigger.textContent = caseSummary.alert_trigger || alertItem.alert_type || "Fraud Alert";
-    if (modalTypologyPill) modalTypologyPill.textContent = caseSummary.typology || decision.typology || inv.typology || "Transaction Anomaly";
+    const resolvedTypology =
+      caseSummary.typology ||
+      result.fraud_typology ||
+      decision.fraud_typology ||
+      decision.typology ||
+      inv.fraud_typology ||
+      inv.typology ||
+      "Unknown / Mixed Pattern";
+    if (modalTypologyPill) modalTypologyPill.textContent = resolvedTypology;
+    if (modalTypologyTooltip) modalTypologyTooltip.textContent = typologyDefinitionFor(result, decision, inv, resolvedTypology);
     if (modalTypologySecondary) {
       const secondary = caseSummary.secondary_typology || "";
       modalTypologySecondary.textContent = secondary;
@@ -1129,27 +1265,36 @@
     if (modalAmount) modalAmount.textContent = formatCurrency(caseSummary.transaction_amount ?? alertItem.amount);
     if (modalDeviation) modalDeviation.innerHTML = `<i class="fa-solid fa-arrow-trend-up"></i> ${caseSummary.deviation || `${(riskScore * 100).toFixed(0)}% risk score`}`;
     if (modalRecommendation) {
-      const recommendationText = plan.recommendation;
-      const drivers = Array.isArray(caseSummary.risk_drivers) ? caseSummary.risk_drivers : [];
-      const disposition = plan.disposition;
-      const recommendationBadgeClass = statusBadgeClasses(disposition);
-      const driverHtml = drivers.length
-        ? `<ul class="mt-2 list-disc pl-5 space-y-1 text-xs text-blue-900">${drivers
+      const recommendationText = result.recommendation || decision.recommendation || caseSummary.recommendation || plan.recommendation;
+      const reasons = deriveReasonBullets(result, caseSummary, decision);
+      const nextActions = deriveRecommendedActions(result, decision, recommendationText);
+      const recommendationBadgeClass = statusBadgeClasses(plan.recommendation);
+      const reasonsHtml = reasons.length
+        ? `<ul class="mt-2 list-disc pl-5 space-y-1 text-sm text-blue-900">${reasons
             .map((d) => `<li>${d}</li>`)
             .join("")}</ul>`
         : "";
+      const actionsHtml = nextActions.length
+        ? `<ol class="mt-2 list-decimal pl-5 space-y-1 text-sm text-text">${nextActions
+            .map((step) => `<li>${step}</li>`)
+            .join("")}</ol>`
+        : "";
       modalRecommendation.innerHTML = `
-        <div class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border mb-2 ${recommendationBadgeClass}">${disposition}</div>
-        <div>${recommendationText}</div>
-        ${driverHtml}
+        <div class="text-xs uppercase tracking-wide text-secondaryText font-semibold mb-1">Recommendation</div>
+        <div class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border mb-2 ${recommendationBadgeClass}">${plan.recommendation}</div>
+        <div class="text-sm text-text">${recommendationText}</div>
+        <div class="text-xs uppercase tracking-wide text-secondaryText font-semibold mt-3 mb-1">Reason</div>
+        ${reasonsHtml}
+        <div class="text-xs uppercase tracking-wide text-secondaryText font-semibold mt-4 mb-1">Recommended Next Actions</div>
+        ${actionsHtml}
       `;
     }
 
     const baseTx = inv.base_transaction || {};
-    if (modalDeviceType) modalDeviceType.textContent = deviceIdentity.device_type || baseTx.device_type || baseTx.device_id || "-";
-    if (modalLocation) modalLocation.textContent = deviceIdentity.location || deviceIdentity.country || "-";
-    if (modalDeviceFingerprint) modalDeviceFingerprint.textContent = deviceIdentity.device_fingerprint || baseTx.device_id || "-";
-    if (modalIpAddress) modalIpAddress.textContent = deviceIdentity.ip_address || baseTx.ip_address || "-";
+    if (modalDeviceType) modalDeviceType.textContent = displayOrNA(deviceIdentity.device_type || baseTx.device_type || baseTx.device_id);
+    if (modalLocation) modalLocation.textContent = displayOrNA(deviceIdentity.location || deviceIdentity.country);
+    if (modalDeviceFingerprint) modalDeviceFingerprint.textContent = displayOrNA(deviceIdentity.device_fingerprint || baseTx.device_id);
+    if (modalIpAddress) modalIpAddress.textContent = displayOrNA(deviceIdentity.ip_address || baseTx.ip_address);
 
     renderSignalCards(signals);
 

@@ -26,6 +26,11 @@ def test_alerts_returns_at_least_25_items():
     assert "items" in data
     assert isinstance(data["items"], list)
     assert len(data["items"]) >= 1  # limit is an upper bound; dataset may be smaller in tests
+    first = data["items"][0]
+    assert "recommendation" in first
+    assert "workflow_status" in first
+    assert first["recommendation"] in {"Clear", "Escalate", "Decline"}
+    assert first["workflow_status"] in {"New", "In Review", "Closed"}
 
 
 def test_metrics_response_keys_present():

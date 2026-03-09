@@ -16,20 +16,13 @@ from agents.decision_agent import DecisionAgent
 from agents.network_agent import NetworkAgent
 from agents.pattern_agent import PatternAgent
 from agents.typology_agent import TypologyAgent
-from models import EvidenceItem, InvestigationState
+from models import EvidenceItem, FraudSignalCode, InvestigationState
 from services.evidence_registry import EvidenceRegistry
 from services.llm_provider import get_llm
 
 logger = logging.getLogger("fraud_api")
 
-_VALID_SIGNAL_CODES = {
-    "HIGH_VELOCITY",
-    "NEW_DEVICE",
-    "NEW_COUNTRY",
-    "LINKED_FRAUD_ACCOUNT",
-    "IMPOSSIBLE_TRAVEL",
-    "MULE_PATTERN",
-}
+_VALID_SIGNAL_CODES = {code.value for code in FraudSignalCode}
 _VALID_SEVERITIES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 
 
@@ -338,6 +331,16 @@ class InvestigationCrew:
         model_used = getattr(get_llm(), "model_name", "gpt-4o-mini")
         llm_provider_used = "openai"
         agent_trace: List[Dict[str, str]] = []
+        scoring_context = {
+            "risk_score": state.risk_score,
+            "signal_breakdown": state.signal_breakdown,
+            "triggered_signals": state.triggered_signals,
+            "synthetic_telemetry_signals": state.synthetic_telemetry_signals,
+            "typology_candidate": state.typology,
+            "typology_candidate_confidence": state.typology_confidence,
+            "typology_candidate_definition": state.typology_definition,
+            "typology_candidate_reason": state.typology_reason,
+        }
 
         logger.warning("[AGENT START] pattern_agent")
         if progress_callback is not None:
@@ -345,10 +348,15 @@ class InvestigationCrew:
         pattern_payload = self._run_evidence_agent_openai(
             agent_name="pattern_agent",
             prompt=(
-                "You are Pattern Agent for banking fraud. Analyze velocity/spike anomalies. "
+                "You are Pattern Agent for banking fraud. Analyze transaction anomalies using deterministic signal evidence. "
                 "Return JSON only: {\"evidence_items\":[{source_agent,signal_code,severity,summary,details}]}."
             ),
-            input_payload={"transaction": tx.model_dump(mode="json"), "account_id": state.account_id},
+            input_payload={
+                "transaction": tx.model_dump(mode="json"),
+                "account_id": state.account_id,
+                "scoring_context": scoring_context,
+                "existing_evidence": [e.model_dump(mode="json") for e in registry.list_all()],
+            },
             fallback_fn=lambda: self.pattern_agent_logic.run(tx),
         )
         self._ingest_agent_evidence(
@@ -365,10 +373,15 @@ class InvestigationCrew:
         behaviour_payload = self._run_evidence_agent_openai(
             agent_name="behaviour_agent",
             prompt=(
-                "You are Behaviour Agent for banking fraud. Analyze device/ip/location context. "
+                "You are Behaviour Agent for banking fraud. Analyze device/ip/location and synthetic telemetry context. "
                 "Return JSON only: {\"evidence_items\":[{source_agent,signal_code,severity,summary,details}]}."
             ),
-            input_payload={"transaction": tx.model_dump(mode="json"), "account_id": state.account_id},
+            input_payload={
+                "transaction": tx.model_dump(mode="json"),
+                "account_id": state.account_id,
+                "scoring_context": scoring_context,
+                "existing_evidence": [e.model_dump(mode="json") for e in registry.list_all()],
+            },
             fallback_fn=lambda: self.behaviour_agent_logic.run(tx),
         )
         self._ingest_agent_evidence(
@@ -386,10 +399,15 @@ class InvestigationCrew:
         network_payload = self._run_evidence_agent_openai(
             agent_name="network_agent",
             prompt=(
-                "You are Network Agent for banking fraud. Analyze beneficiary/network graph context. "
+                "You are Network Agent for banking fraud. Analyze beneficiary/network graph context and graph-linked risk evidence. "
                 "Return JSON only: {\"evidence_items\":[{source_agent,signal_code,severity,summary,details}]}."
             ),
-            input_payload={"transaction": tx.model_dump(mode="json"), "network_context": network_context},
+            input_payload={
+                "transaction": tx.model_dump(mode="json"),
+                "network_context": network_context,
+                "scoring_context": scoring_context,
+                "existing_evidence": [e.model_dump(mode="json") for e in registry.list_all()],
+            },
             fallback_fn=lambda: self.network_agent_logic.run(tx),
         )
         self._ingest_agent_evidence(
@@ -409,19 +427,55 @@ class InvestigationCrew:
         typology_payload = self._run_openai_json_call(
             agent_name="typology_agent",
             prompt=(
-                "You are Typology Agent. Classify typology from evidence. "
-                "Return JSON only: {\"typology\":\"...\"}."
+                "You are Typology Agent. Classify fraud typology from evidence and deterministic signal breakdown. "
+                "Use only this controlled typology set: "
+                "[\"Potential Mule Transfer\",\"Velocity Fraud\",\"Account Takeover\",\"Beneficiary Risk\","
+                "\"Transaction Anomaly\",\"Structured Cash-Out Pattern\",\"Unknown / Mixed Pattern\"]. "
+                "Return JSON only: {\"fraud_typology\":\"...\",\"typology_confidence\":0-1,"
+                "\"typology_definition\":\"...\",\"typology_reason\":[\"...\"]}."
             ),
-            input_payload={"evidence_items": [e.model_dump(mode="json") for e in evidence]},
+            input_payload={
+                "evidence_items": [e.model_dump(mode="json") for e in evidence],
+                "scoring_context": scoring_context,
+            },
         )
-        if not isinstance(typology_payload, dict) or not typology_payload.get("typology"):
+        if not isinstance(typology_payload, dict) or not (
+            typology_payload.get("fraud_typology") or typology_payload.get("typology")
+        ):
             logger.warning("[OPENAI FALLBACK] agent=typology_agent reason=invalid_json_payload")
             llm_provider_used = "openai_fallback"
-            typology_payload = self.typology_agent_logic.run(evidence)
+            typology_payload = self.typology_agent_logic.run(
+                evidence,
+                triggered_signals=state.triggered_signals,
+                signal_breakdown=state.signal_breakdown,
+                candidate_typology=state.typology,
+            )
         logger.warning("[AGENT OUTPUT] typology_agent = %s", _preview_text(typology_payload))
         logger.warning("[AGENT END] typology_agent")
-        typology = str(typology_payload.get("typology") or "Generic Fraud")
+        typology = str(
+            typology_payload.get("fraud_typology")
+            or typology_payload.get("typology")
+            or state.typology
+            or "Unknown / Mixed Pattern"
+        )
+        typology_confidence = _normalize_probability(
+            typology_payload.get("typology_confidence", state.typology_confidence or 0.6)
+        )
+        typology_definition = str(
+            typology_payload.get("typology_definition")
+            or state.typology_definition
+            or "Suspicious transaction pattern detected that deviates from normal account behavior."
+        )
+        typology_reason = typology_payload.get("typology_reason")
+        if isinstance(typology_reason, str):
+            typology_reason = [typology_reason]
+        if not isinstance(typology_reason, list):
+            typology_reason = list(state.typology_reason or [])
+        typology_reason = [str(r) for r in typology_reason][:4]
         state.typology = typology
+        state.typology_confidence = typology_confidence
+        state.typology_definition = typology_definition
+        state.typology_reason = typology_reason
         if progress_callback is not None:
             progress_callback({"agent": "typology_agent", "status": "completed", "summary": typology})
         agent_trace.append({"agent": "typology_agent", "status": "completed", "summary": typology})
@@ -432,15 +486,21 @@ class InvestigationCrew:
         decision = self._run_openai_json_call(
             agent_name="decision_agent",
             prompt=(
-                "You are Decision Agent. Given evidence and typology, produce final decision JSON only: "
-                "{\"risk_score\":0-1,\"recommendation\":\"...\",\"confidence\":0-1,\"decision_rationale\":\"...\",\"typology\":\"...\"}."
+                "You are Decision Agent. Given deterministic scoring evidence, typology, and agent evidence, produce final analyst decision JSON only. "
+                "Recommendation MUST be one of [\"Clear\",\"Escalate\",\"Decline\"]. "
+                "Return JSON schema: {\"risk_score\":0-1,\"recommendation\":\"Clear|Escalate|Decline\","
+                "\"decision_confidence\":0-1,\"decision_reason\":[\"...\"],\"fraud_typology\":\"...\"}."
             ),
             input_payload={
                 "typology": typology,
+                "typology_confidence": typology_confidence,
+                "typology_definition": typology_definition,
+                "typology_reason": typology_reason,
                 "evidence_items": [e.model_dump(mode="json") for e in evidence],
+                "scoring_context": scoring_context,
             },
         )
-        required = {"risk_score", "recommendation", "confidence", "decision_rationale"}
+        required = {"recommendation", "decision_confidence", "decision_reason", "fraud_typology"}
         if not isinstance(decision, dict) or not required.issubset(set(decision.keys())):
             logger.warning("[OPENAI FALLBACK] agent=decision_agent reason=invalid_json_payload")
             llm_provider_used = "openai_fallback"
@@ -448,12 +508,33 @@ class InvestigationCrew:
         logger.warning("[AGENT OUTPUT] decision_agent = %s", _preview_text(decision))
         logger.warning("[AGENT END] decision_agent")
 
-        normalized_risk = _normalize_probability(decision.get("risk_score", 0.0))
+        normalized_risk = _normalize_probability(
+            state.risk_score if state.risk_score is not None else decision.get("risk_score", 0.0)
+        )
         decision["risk_score"] = normalized_risk
-        decision["typology"] = decision.get("typology") or typology
+        decision["fraud_typology"] = decision.get("fraud_typology") or typology
+        decision["typology_confidence"] = typology_confidence
+        decision["typology_definition"] = typology_definition
+        decision["typology_reason"] = typology_reason
+        rec = str(decision.get("recommendation") or "Escalate").strip().lower()
+        if rec.startswith("clear"):
+            decision["recommendation"] = "Clear"
+        elif rec.startswith("decline"):
+            decision["recommendation"] = "Decline"
+        else:
+            decision["recommendation"] = "Escalate"
+        decision["decision_confidence"] = _normalize_probability(
+            decision.get("decision_confidence", decision.get("confidence", 0.0))
+        )
+        reasons = decision.get("decision_reason")
+        if isinstance(reasons, str):
+            reasons = [r.strip() for r in re.split(r"[;\n]", reasons) if r.strip()]
+        if not isinstance(reasons, list):
+            reasons = []
+        decision["decision_reason"] = [str(r) for r in reasons][:5]
         state.risk_score = normalized_risk
         state.recommendation = decision.get("recommendation")
-        state.confidence = _normalize_probability(decision.get("confidence", 0.0))
+        state.confidence = decision["decision_confidence"]
         decision_summary = f"{decision.get('recommendation', 'n/a')} / risk_score={normalized_risk:.2f}"
         agent_trace.append({"agent": "decision_agent", "status": "completed", "summary": decision_summary})
         if progress_callback is not None:
@@ -497,6 +578,7 @@ class InvestigationCrew:
         llm = get_llm()
         model_name = getattr(llm, "model_name", "gpt-4o-mini")
         logger.warning("[OPENAI CALL START] agent=%s model=%s", agent_name, model_name)
+        logger.warning("OPENAI MODEL INVOKED")
         safe_input = jsonable_encoder(input_payload)
         message = llm.invoke(
             [

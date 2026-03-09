@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import List
+from typing import Dict, List
 
 from pydantic import BaseModel, Field
 
@@ -49,6 +49,20 @@ class InvestigationState(BaseModel):
         default=None,
         description="Primary fraud typology label inferred by TypologyAgent (e.g. Account Takeover).",
     )
+    typology_confidence: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Confidence score for assigned fraud typology.",
+    )
+    typology_definition: str | None = Field(
+        default=None,
+        description="Analyst-facing definition for the assigned typology.",
+    )
+    typology_reason: List[str] = Field(
+        default_factory=list,
+        description="Short rationale bullets supporting typology selection.",
+    )
     recommendation: str | None = Field(
         default=None,
         description="DecisionAgent recommendation (e.g. 'Escalate and freeze beneficiary account').",
@@ -58,5 +72,17 @@ class InvestigationState(BaseModel):
         ge=0.0,
         le=1.0,
         description="Normalised confidence value for the overall recommendation.",
+    )
+    signal_breakdown: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Per-signal deterministic contribution breakdown from scoring engine.",
+    )
+    triggered_signals: List[str] = Field(
+        default_factory=list,
+        description="List of triggered deterministic fraud signals.",
+    )
+    synthetic_telemetry_signals: List[str] = Field(
+        default_factory=list,
+        description="Triggered synthetic telemetry signal names (deterministically generated).",
     )
 

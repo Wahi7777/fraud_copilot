@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from models import EnrichedTransactionRecord
 from services.data_repository import DataRepository, DataRepositoryConfig
 from services.llm_provider import get_llm_runtime_info
+from services.typology_classifier import TYPOLOGY_DEFINITIONS
 
 
 # Load environment variables (including OPENAI_API_KEY) from .env if present
@@ -181,12 +182,20 @@ def _derive_typology(signals: Dict[str, Dict[str, str]], network: Dict[str, Any]
     if network.get("fraud_link"):
         return "Potential Mule Transfer"
     if high_device and geo_flag:
-        return "Possible Account Takeover"
+        return "Account Takeover"
     if high_velocity:
-        return "Suspicious Transfer Pattern"
+        return "Velocity Fraud"
     if "transfer_amount" in signals or "balance_drain" in signals:
         return "Transaction Anomaly"
-    return "Suspicious Transaction Activity"
+    return "Unknown / Mixed Pattern"
+
+
+def _typology_definition(typology: str | None) -> str:
+    token = str(typology or "").strip()
+    return TYPOLOGY_DEFINITIONS.get(
+        token,
+        "Suspicious transaction pattern detected that deviates from normal account behavior.",
+    )
 
 
 def _risk_drivers(signals: Dict[str, Dict[str, str]], network: Dict[str, Any], risk_score: float) -> List[str]:
@@ -210,168 +219,60 @@ def _risk_drivers(signals: Dict[str, Dict[str, str]], network: Dict[str, Any], r
     return drivers[:4]
 
 
-def _severity_factor(level: str | None) -> float:
-    token = str(level or "").lower()
-    if token == "high":
-        return 1.0
-    if token == "medium":
-        return 0.6
-    if token == "low":
-        return 0.3
-    return 0.0
-
-
-def _has_proxy_risk(evidence: List[Dict[str, Any]]) -> bool:
-    for ev in evidence:
-        text = f"{ev.get('summary', '')} {ev.get('details', '')}".lower()
-        if any(k in text for k in ["proxy", "vpn", "tor", "anonym", "masked ip"]):
-            return True
-    return False
-
-
-def _has_repeated_critical(evidence: List[Dict[str, Any]]) -> bool:
-    critical_count = 0
-    for ev in evidence:
-        if str(ev.get("severity") or "").lower() == "critical":
-            critical_count += 1
-    return critical_count >= 2
-
-
-def _compute_final_policy(
-    *,
-    signals: Dict[str, Dict[str, str]],
-    network: Dict[str, Any],
-    evidence: List[Dict[str, Any]],
-    llm_risk_score: float,
-) -> Dict[str, Any]:
-    """
-    Deterministic final scoring and action policy.
-
-    Weighted additive model with bounded signal contributions:
-    - transaction_anomaly: max 0.16
-    - device_risk: max 0.16
-    - ip_proxy_risk: max 0.14
-    - velocity: max 0.16
-    - balance_utilization: max 0.14
-    - beneficiary_risk: max 0.24
-    """
-    velocity = 0.16 * _severity_factor(signals.get("velocity", {}).get("severity"))
-    device_risk = 0.16 * _severity_factor(signals.get("device_reuse", {}).get("severity"))
-    transaction_anomaly = 0.16 * _severity_factor(
-        (signals.get("transfer_amount") or signals.get("balance_drain") or {}).get("severity")
-    )
-    balance_utilization = 0.14 * _severity_factor(signals.get("balance_drain", {}).get("severity"))
-    ip_proxy_risk = 0.14 if _has_proxy_risk(evidence) else 0.03
-    if network.get("fraud_link"):
-        beneficiary_risk = 0.24
-    elif network.get("suspected_network_risk"):
-        beneficiary_risk = 0.12
-    else:
-        beneficiary_risk = 0.02
-
-    # Keep some influence from model reasoning, but bounded so policy stays controllable.
-    llm_adjustment = min(max(llm_risk_score, 0.0), 1.0) * 0.06
-    base_prior = 0.06
-    contributions = {
-        "transaction_anomaly": round(transaction_anomaly, 3),
-        "device_risk": round(device_risk, 3),
-        "ip_proxy_risk": round(ip_proxy_risk, 3),
-        "velocity": round(velocity, 3),
-        "balance_utilization": round(balance_utilization, 3),
-        "beneficiary_risk": round(beneficiary_risk, 3),
-        "llm_adjustment": round(llm_adjustment, 3),
-        "base_prior": round(base_prior, 3),
-    }
-    final_score = min(round(sum(contributions.values()), 3), 0.99)
-
-    if final_score < 0.30:
-        final_band = "low"
-    elif final_score < 0.65:
-        final_band = "medium"
-    elif final_score < 0.85:
-        final_band = "high"
-    else:
-        final_band = "critical"
-
-    high_like_count = sum(
-        1
-        for key in ["transaction_anomaly", "device_risk", "velocity", "balance_utilization"]
-        if contributions.get(key, 0.0) >= 0.11
-    )
-    strong_ato = (
-        _severity_factor(signals.get("device_reuse", {}).get("severity")) >= 1.0
-        and _severity_factor(signals.get("geo_anomaly", {}).get("severity")) >= 1.0
-        and contributions["ip_proxy_risk"] >= 0.14
-    )
-    hard_stop = bool(
-        network.get("fraud_link")
-        or strong_ato
-        or _has_repeated_critical(evidence)
-        or (high_like_count >= 3 and final_score >= 0.90)
-    )
-    hard_stop_reasons: List[str] = []
-    if network.get("fraud_link"):
-        hard_stop_reasons.append("confirmed_fraud_link")
-    if strong_ato:
-        hard_stop_reasons.append("strong_ato_pattern")
-    if _has_repeated_critical(evidence):
-        hard_stop_reasons.append("repeated_critical_behavior")
-    if high_like_count >= 3 and final_score >= 0.90:
-        hard_stop_reasons.append("multiple_high_severity_signals")
-
-    if final_band == "critical" and hard_stop:
-        action = "freeze_account"
-        recommendation = "Freeze account and escalate immediately due to confirmed critical fraud indicators."
-    elif final_band in {"high", "critical"}:
-        action = "decline_transaction"
-        recommendation = "Decline transaction and escalate for fraud analyst review."
-    elif final_band == "medium":
-        action = "hold_and_review"
-        recommendation = "Hold transaction and perform step-up verification with analyst review."
-    else:
-        action = "mark_false_positive" if final_score < 0.20 else "close_case"
-        recommendation = "Close alert with monitoring; no immediate blocking action."
-
-    logger.warning(
-        "[POLICY DEBUG] contributions=%s final_score=%.3f final_band=%s final_action=%s hard_stop=%s hard_stop_reasons=%s",
-        contributions,
-        final_score,
-        final_band,
-        action,
-        hard_stop,
-        hard_stop_reasons,
-    )
-    return {
-        "final_score": final_score,
-        "final_band": final_band,
-        "final_action": action,
-        "final_recommendation": recommendation,
-        "hard_stop_triggered": hard_stop,
-        "hard_stop_reasons": hard_stop_reasons,
-        "contributions": contributions,
-    }
-
-
-def _map_decision_to_queue_status(decision: Dict[str, Any] | None) -> str:
-    token = str(
-        (decision or {}).get("recommended_action")
-        or (decision or {}).get("action")
-        or (decision or {}).get("recommendation")
-        or ""
-    ).lower()
-    if "decline_transaction" in token:
-        return "Decline"
-    if "hold_and_review" in token or "step_up_auth" in token:
-        return "Hold"
-    if "freeze_account" in token:
-        return "Freeze"
-    if "escalate_case" in token:
+def _base_recommendation_from_score(score: float) -> str:
+    if score < 0.35:
+        return "Clear"
+    if score < 0.70:
         return "Escalate"
-    if "mark_false_positive" in token:
-        return "False Positive"
-    if "close_case" in token:
-        return "Closed"
-    return "Closed"
+    return "Decline"
+
+
+def _normalize_recommendation_value(value: Any, *, risk_score: float) -> str:
+    token = str(value or "").strip().lower()
+    if token == "clear" or "clear" in token:
+        return "Clear"
+    if token == "decline" or "decline" in token:
+        return "Decline"
+    if token == "escalate" or "escalate" in token:
+        return "Escalate"
+    return _base_recommendation_from_score(risk_score)
+
+
+def _recommended_actions_for_recommendation(recommendation: str) -> List[str]:
+    rec = str(recommendation or "").strip().lower()
+    if rec == "clear":
+        return [
+            "Allow the transaction",
+            "Record investigation outcome",
+            "Close the case as false positive",
+        ]
+    if rec == "decline":
+        return [
+            "Block the transaction",
+            "Place a temporary hold on the sender account",
+            "Investigate linked beneficiary accounts",
+            "Escalate to financial crime investigation if suspicious activity continues",
+        ]
+    return [
+        "Perform enhanced customer verification",
+        "Review recent transaction history",
+        "Investigate beneficiary account activity",
+        "Escalate to senior fraud analyst if risk persists",
+    ]
+
+
+def _workflow_from_recommendation(recommendation: str) -> str:
+    return "Closed" if recommendation == "Clear" else "In Review"
+
+
+def _agent_votes_from_trace(agent_trace: List[Dict[str, Any]]) -> Dict[str, str]:
+    votes: Dict[str, str] = {}
+    for step in agent_trace:
+        agent = str(step.get("agent") or "").strip()
+        if not agent:
+            continue
+        votes[agent] = "review"
+    return votes
 
 
 @lru_cache(maxsize=1)
@@ -422,11 +323,13 @@ def _get_alert_catalog() -> List[Dict[str, Any]]:
     for tx in records:
         risk_score = _risk_from_tx(tx)
         if risk_score >= 0.7:
-            risk_level, status = "HIGH", "Open"
+            risk_level = "HIGH"
         elif risk_score >= 0.4:
-            risk_level, status = "MEDIUM", "Reviewing"
+            risk_level = "MEDIUM"
         else:
-            risk_level, status = "LOW", "Pending"
+            risk_level = "LOW"
+        recommendation = _base_recommendation_from_score(risk_score)
+        workflow_status = "New"
 
         catalog.append(
             {
@@ -439,7 +342,9 @@ def _get_alert_catalog() -> List[Dict[str, Any]]:
                 "risk_score": risk_score,
                 "risk_level": risk_level,
                 "timestamp": tx.timestamp,
-                "status": status,
+                "status": workflow_status,
+                "workflow_status": workflow_status,
+                "recommendation": recommendation,
             }
         )
     return catalog
@@ -495,6 +400,9 @@ def create_app() -> FastAPI:
             "Implements the investigation pipeline, CrewAI agents, and "
             "supporting services as defined in the MVP PRD."
         ),
+    )
+    logger.warning(
+        "[DECISION DIAGNOSIS] prior queue logic conflated workflow status with recommendation and frontend risk-band mapping overrode nuanced backend outputs"
     )
 
     # CORS configuration – relaxed for MVP/demo, can be tightened later
@@ -552,7 +460,21 @@ def create_app() -> FastAPI:
         investigation_completed_at: Optional[datetime] = None
         final_risk_score: Optional[float] = None
         final_recommendation: Optional[str] = None
-        queue_status: Optional[str] = None
+        queue_status: Optional[str] = None  # legacy UI compatibility
+        workflow_status: Optional[str] = None
+        recommendation: Optional[str] = None
+        decision_confidence: Optional[float] = None
+        decision_reason: Optional[List[str]] = None
+        recommended_actions: Optional[List[str]] = None
+        fraud_typology: Optional[str] = None
+        typology_confidence: Optional[float] = None
+        typology_definition: Optional[str] = None
+        typology_reason: Optional[List[str]] = None
+        triggered_signals: Optional[List[str]] = None
+        signal_breakdown: Optional[Dict[str, float]] = None
+        agent_votes: Optional[Dict[str, str]] = None
+        override_applied: Optional[bool] = None
+        override_reason: Optional[str] = None
 
     class InvestigationEnvelope(BaseModel):
         ok: bool
@@ -578,12 +500,26 @@ def create_app() -> FastAPI:
         risk_score: float
         risk_level: str
         timestamp: datetime
-        status: str
+        status: str  # legacy
+        recommendation: str = "Escalate"
+        workflow_status: str = "New"
         investigation_status: str = "new"
         investigation_completed_at: Optional[datetime] = None
         investigation_summary: Optional[str] = None
         final_risk_score: Optional[float] = None
         final_recommendation: Optional[str] = None
+        decision_confidence: Optional[float] = None
+        decision_reason: Optional[List[str]] = None
+        recommended_actions: Optional[List[str]] = None
+        fraud_typology: Optional[str] = None
+        typology_confidence: Optional[float] = None
+        typology_definition: Optional[str] = None
+        typology_reason: Optional[List[str]] = None
+        triggered_signals: Optional[List[str]] = None
+        signal_breakdown: Optional[Dict[str, float]] = None
+        agent_votes: Optional[Dict[str, str]] = None
+        override_applied: Optional[bool] = None
+        override_reason: Optional[str] = None
         has_cached_investigation: bool = False
         last_investigation_id: Optional[str] = None
         queue_status: Optional[str] = None
@@ -775,12 +711,25 @@ def create_app() -> FastAPI:
         for row in catalog:
             store_entry = _get_investigation_store().get(row["alert_id"])
             risk_score = float(row["risk_score"])
-            queue_status = row["status"]
+            recommendation = _normalize_recommendation_value(row.get("recommendation"), risk_score=risk_score)
+            workflow_status = row.get("workflow_status") or "New"
             investigation_status = "new"
             investigation_completed_at = None
             investigation_summary = None
             final_risk_score = None
             final_recommendation = None
+            decision_confidence = None
+            decision_reason = None
+            recommended_actions = None
+            fraud_typology = None
+            typology_confidence = None
+            typology_definition = None
+            typology_reason = None
+            triggered_signals = None
+            signal_breakdown = None
+            agent_votes = None
+            override_applied = None
+            override_reason = None
             has_cached_investigation = False
             last_investigation_id = None
 
@@ -788,7 +737,14 @@ def create_app() -> FastAPI:
                 data = store_entry.get("data") or {}
                 decision = data.get("decision") or {}
                 risk_score = float(data.get("risk_score", risk_score))
-                queue_status = _map_decision_to_queue_status(decision)
+                recommendation = _normalize_recommendation_value(
+                    data.get("recommendation")
+                    or decision.get("recommendation")
+                    or data.get("final_recommendation")
+                    or recommendation,
+                    risk_score=risk_score,
+                )
+                workflow_status = data.get("workflow_status") or "In Review"
                 investigation_status = "investigated"
                 investigation_completed_at = store_entry.get("investigation_completed_at")
                 investigation_summary = (
@@ -797,6 +753,34 @@ def create_app() -> FastAPI:
                 )
                 final_risk_score = risk_score
                 final_recommendation = decision.get("recommendation")
+                decision_confidence = data.get("decision_confidence") or decision.get("decision_confidence")
+                decision_reason = data.get("decision_reason") or decision.get("decision_reason")
+                if isinstance(decision_reason, str):
+                    decision_reason = [decision_reason]
+                recommended_actions = data.get("recommended_actions") or decision.get("recommended_actions")
+                if isinstance(recommended_actions, str):
+                    recommended_actions = [recommended_actions]
+                if not isinstance(recommended_actions, list):
+                    recommended_actions = None
+                fraud_typology = data.get("fraud_typology") or decision.get("fraud_typology") or decision.get("typology")
+                typology_confidence = data.get("typology_confidence") or decision.get("typology_confidence")
+                typology_definition = data.get("typology_definition") or decision.get("typology_definition")
+                typology_reason = data.get("typology_reason") or decision.get("typology_reason")
+                if isinstance(typology_reason, str):
+                    typology_reason = [typology_reason]
+                if not isinstance(typology_reason, list):
+                    typology_reason = None
+                triggered_signals = data.get("triggered_signals") or decision.get("triggered_signals")
+                if not isinstance(triggered_signals, list):
+                    triggered_signals = None
+                signal_breakdown = data.get("signal_breakdown") or decision.get("signal_breakdown")
+                if not isinstance(signal_breakdown, dict):
+                    signal_breakdown = None
+                agent_votes = data.get("agent_votes") or decision.get("agent_votes")
+                if not isinstance(agent_votes, dict):
+                    agent_votes = None
+                override_applied = data.get("override_applied") if data.get("override_applied") is not None else decision.get("override_applied")
+                override_reason = data.get("override_reason") or decision.get("override_reason")
                 has_cached_investigation = True
                 last_investigation_id = (data.get("investigation") or {}).get("investigation_id")
 
@@ -807,8 +791,10 @@ def create_app() -> FastAPI:
             row_payload = dict(row)
             row_payload["risk_score"] = risk_score
             row_payload["risk_level"] = "HIGH" if risk_score >= 0.7 else "MEDIUM" if risk_score >= 0.4 else "LOW"
-            row_payload["status"] = queue_status
-            row_payload["queue_status"] = queue_status
+            row_payload["recommendation"] = recommendation
+            row_payload["workflow_status"] = workflow_status
+            row_payload["status"] = workflow_status
+            row_payload["queue_status"] = recommendation
             if investigation_completed_at:
                 row_payload["timestamp"] = investigation_completed_at
             row_payload["investigation_status"] = investigation_status
@@ -816,6 +802,18 @@ def create_app() -> FastAPI:
             row_payload["investigation_summary"] = investigation_summary
             row_payload["final_risk_score"] = final_risk_score
             row_payload["final_recommendation"] = final_recommendation
+            row_payload["decision_confidence"] = decision_confidence
+            row_payload["decision_reason"] = decision_reason
+            row_payload["recommended_actions"] = recommended_actions
+            row_payload["fraud_typology"] = fraud_typology
+            row_payload["typology_confidence"] = typology_confidence
+            row_payload["typology_definition"] = typology_definition
+            row_payload["typology_reason"] = typology_reason
+            row_payload["triggered_signals"] = triggered_signals
+            row_payload["signal_breakdown"] = signal_breakdown
+            row_payload["agent_votes"] = agent_votes
+            row_payload["override_applied"] = override_applied
+            row_payload["override_reason"] = override_reason
             row_payload["has_cached_investigation"] = has_cached_investigation
             row_payload["last_investigation_id"] = last_investigation_id
             items.append(AlertItem(**row_payload))
@@ -858,27 +856,82 @@ def create_app() -> FastAPI:
         evidence = payload.get("evidence") or []
         signals = _build_modal_signals(base_tx, evidence)
         network = _network_summary(evidence)
-        llm_score = _to_float(decision.get("risk_score", inv.get("risk_score")))
-        policy = _compute_final_policy(
-            signals=signals,
-            network=network,
-            evidence=evidence,
-            llm_risk_score=llm_score,
+        score = _to_float(inv.get("risk_score", decision.get("risk_score")))
+        typology = (
+            decision.get("fraud_typology")
+            or decision.get("typology")
+            or inv.get("fraud_typology")
+            or inv.get("typology")
+            or _derive_typology(signals, network)
         )
-        score = float(policy["final_score"])
-        typology = _derive_typology(signals, network)
-        recommendation_bundle = {
-            "recommended_action": policy["final_action"],
-            "recommendation": policy["final_recommendation"],
-        }
+        typology_confidence = _to_float(
+            decision.get("typology_confidence", inv.get("typology_confidence")),
+            default=0.6,
+        )
+        typology_definition = (
+            decision.get("typology_definition")
+            or inv.get("typology_definition")
+            or _typology_definition(typology)
+        )
+        typology_reason = decision.get("typology_reason") or inv.get("typology_reason") or []
+        if isinstance(typology_reason, str):
+            typology_reason = [typology_reason]
+        if not isinstance(typology_reason, list):
+            typology_reason = []
+        typology_reason = [str(x) for x in typology_reason if str(x).strip()][:4]
+        recommendation = _normalize_recommendation_value(
+            decision.get("recommendation") or inv.get("recommendation"),
+            risk_score=score,
+        )
+        decision_confidence = _to_float(
+            decision.get("decision_confidence", decision.get("confidence", inv.get("confidence"))),
+            default=max(0.45, min(0.95, 0.35 + 0.55 * score)),
+        )
+        decision_reason = decision.get("decision_reason")
+        if isinstance(decision_reason, str):
+            decision_reason = [decision_reason]
+        if not isinstance(decision_reason, list):
+            decision_reason = []
+        decision_reason = [str(x) for x in decision_reason if str(x).strip()]
+        recommended_actions = decision.get("recommended_actions") or payload.get("recommended_actions") or inv.get("recommended_actions")
+        if isinstance(recommended_actions, str):
+            recommended_actions = [recommended_actions]
+        if not isinstance(recommended_actions, list) or not recommended_actions:
+            recommended_actions = _recommended_actions_for_recommendation(recommendation)
+        recommended_actions = [str(x).strip() for x in recommended_actions if str(x).strip()]
+        triggered_signals = payload.get("triggered_signals") or inv.get("triggered_signals") or decision.get("triggered_signals") or []
+        if not isinstance(triggered_signals, list):
+            triggered_signals = []
+        triggered_signals = [str(s) for s in triggered_signals]
+        signal_breakdown = payload.get("signal_breakdown") or inv.get("signal_breakdown") or {}
+        if not isinstance(signal_breakdown, dict):
+            signal_breakdown = {}
+        agent_votes = decision.get("agent_votes")
+        if not isinstance(agent_votes, dict):
+            agent_votes = _agent_votes_from_trace(payload.get("agent_trace") or [])
+        override_applied = bool(decision.get("override_applied", False))
+        override_reason = decision.get("override_reason")
+        workflow_status = _workflow_from_recommendation(recommendation)
         risk_drivers = _risk_drivers(signals, network, score)
+        logger.warning(
+            "[DECISION TRACE] alert_id=%s risk_score=%.3f signal_contributions=%s recommendation=%s confidence=%.3f triggered_signals=%s agent_votes=%s override_reason=%s",
+            inv.get("transaction_id"),
+            score,
+            signal_breakdown,
+            recommendation,
+            decision_confidence,
+            triggered_signals,
+            agent_votes,
+            override_reason,
+        )
 
         case_summary = {
             "alert_trigger": "High Velocity Transfer" if (base_tx.get("transaction_velocity_10min") or 0) >= 3 else "Transaction Anomaly",
             "typology": typology,
+            "typology_definition": typology_definition,
             "transaction_amount": base_tx.get("amount"),
             "deviation": f"{int(score * 100)}% risk score",
-            "recommendation": recommendation_bundle["recommendation"],
+            "recommendation": recommendation,
             "risk_drivers": risk_drivers,
         }
         device_identity = {
@@ -904,29 +957,56 @@ def create_app() -> FastAPI:
             "connections": None,
             "network_risk_label": network["network_risk_label"],
         }
-        decision["typology"] = typology
-        decision["recommended_action"] = recommendation_bundle["recommended_action"]
-        decision["recommendation"] = recommendation_bundle["recommendation"]
-        decision["risk_band"] = policy["final_band"]
-        decision["hard_stop_triggered"] = policy["hard_stop_triggered"]
-        decision["hard_stop_reasons"] = policy["hard_stop_reasons"]
-        decision["signal_contributions"] = policy["contributions"]
+        decision["fraud_typology"] = typology
+        decision["typology_confidence"] = typology_confidence
+        decision["typology_definition"] = typology_definition
+        decision["typology_reason"] = typology_reason
+        decision["recommendation"] = recommendation
+        decision["decision_confidence"] = decision_confidence
+        decision["decision_reason"] = decision_reason
+        decision["recommended_actions"] = recommended_actions
+        decision["triggered_signals"] = triggered_signals
+        decision["signal_breakdown"] = signal_breakdown
+        decision["agent_votes"] = agent_votes
+        decision["override_applied"] = override_applied
+        decision["override_reason"] = override_reason
         decision["risk_drivers"] = risk_drivers
         decision["decision_rationale"] = (
             f"Risk score {score:.2f} with key drivers: "
             + (", ".join(risk_drivers) if risk_drivers else "transaction anomaly pattern under review")
-            + f". Recommended action: {recommendation_bundle['recommended_action']}."
+            + f". Recommendation: {recommendation}."
         )
         inv["typology"] = typology
-        inv["recommendation"] = recommendation_bundle["recommendation"]
+        inv["fraud_typology"] = typology
+        inv["typology_confidence"] = typology_confidence
+        inv["typology_definition"] = typology_definition
+        inv["typology_reason"] = typology_reason
+        inv["recommendation"] = recommendation
+        inv["recommended_actions"] = recommended_actions
         inv["risk_score"] = score
-        inv["risk_band"] = policy["final_band"]
+        inv["workflow_status"] = workflow_status
+        inv["signal_breakdown"] = signal_breakdown
+        inv["triggered_signals"] = triggered_signals
 
         payload["alert_id"] = inv.get("transaction_id")
         payload["customer_id"] = inv.get("account_id")
         payload["account_id"] = inv.get("account_id")
         payload["timestamp"] = base_tx.get("timestamp")
         payload["risk_score"] = score
+        payload["fraud_typology"] = typology
+        payload["typology_confidence"] = typology_confidence
+        payload["typology_definition"] = typology_definition
+        payload["typology_reason"] = typology_reason
+        payload["workflow_status"] = workflow_status
+        payload["recommendation"] = recommendation
+        payload["decision_confidence"] = decision_confidence
+        payload["decision_reason"] = decision_reason
+        payload["recommended_actions"] = recommended_actions
+        payload["triggered_signals"] = triggered_signals
+        payload["signal_breakdown"] = signal_breakdown
+        payload["agent_votes"] = agent_votes
+        payload["override_applied"] = override_applied
+        payload["override_reason"] = override_reason
         payload["case_summary"] = case_summary
         payload["device_identity"] = device_identity
         payload["signals"] = signals
@@ -967,8 +1047,12 @@ def create_app() -> FastAPI:
             result["investigation_completed_at"] = completed_at
             result["timestamp"] = completed_at
             result["final_risk_score"] = result.get("risk_score")
-            result["final_recommendation"] = decision.get("recommendation")
-            result["queue_status"] = _map_decision_to_queue_status(decision)
+            result["final_recommendation"] = _normalize_recommendation_value(
+                result.get("recommendation") or decision.get("recommendation"),
+                risk_score=float(result.get("risk_score") or 0.0),
+            )
+            result["workflow_status"] = result.get("workflow_status") or "In Review"
+            result["queue_status"] = result["final_recommendation"]
             result["llm_provider_used"] = result.get("llm_provider_used") or llm_info.get("provider") or "openai"
             result["model_used"] = result.get("model_used") or llm_info.get("model")
             store = _get_investigation_store()
@@ -1000,14 +1084,17 @@ def create_app() -> FastAPI:
                         "base_transaction": tx.model_dump(mode="json"),
                         "evidence": [],
                         "risk_score": _risk_from_tx(tx),
-                        "typology": "Fallback Typology",
+                        "typology": "Unknown / Mixed Pattern",
                         "recommendation": "Fallback recommendation from backend.",
                         "confidence": _risk_from_tx(tx),
                     },
                     "evidence": [],
                     "decision": {
                         "risk_score": _risk_from_tx(tx),
-                        "typology": "Fallback Typology",
+                        "fraud_typology": "Unknown / Mixed Pattern",
+                        "typology_confidence": 0.5,
+                        "typology_definition": _typology_definition("Unknown / Mixed Pattern"),
+                        "typology_reason": ["Fallback mode used due to investigation runtime failure."],
                         "recommendation": "Fallback recommendation from backend.",
                         "confidence": _risk_from_tx(tx),
                         "decision_rationale": "Crew execution failed; fallback mode enabled.",
@@ -1019,8 +1106,12 @@ def create_app() -> FastAPI:
                 safe_fallback["investigation_completed_at"] = completed_at
                 safe_fallback["timestamp"] = completed_at
                 safe_fallback["final_risk_score"] = safe_fallback.get("risk_score")
-                safe_fallback["final_recommendation"] = (safe_fallback.get("decision") or {}).get("recommendation")
-                safe_fallback["queue_status"] = _map_decision_to_queue_status(safe_fallback.get("decision"))
+                safe_fallback["final_recommendation"] = _normalize_recommendation_value(
+                    safe_fallback.get("recommendation") or (safe_fallback.get("decision") or {}).get("recommendation"),
+                    risk_score=float(safe_fallback.get("risk_score") or 0.0),
+                )
+                safe_fallback["workflow_status"] = safe_fallback.get("workflow_status") or "In Review"
+                safe_fallback["queue_status"] = safe_fallback["final_recommendation"]
                 safe_fallback["llm_provider_used"] = "deterministic"
                 safe_fallback["model_used"] = llm_info.get("model")
                 _get_investigation_store()[alert_id] = {
