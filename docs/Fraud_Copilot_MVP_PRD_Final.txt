@@ -1,0 +1,165 @@
+Agentic Fraud Investigation Co‑Pilot — MVP
+Version: Final Build Specification v5.0
+Author: Sid Wahi
+1. Product Overview
+Banks and financial institutions receive large volumes of fraud alerts from transaction monitoring systems.
+Each alert requires manual investigation including transaction history analysis, behavioural anomaly detection,
+device/IP checks, beneficiary analysis, network relationships, fraud typology identification and documentation.
+Typical investigation time: 10–30 minutes per alert.
+2. Product Solution
+The Fraud Investigation Co‑Pilot automates alert investigation.
+Workflow:
+Fraud Alert → Investigation Context → CrewAI Agents → Evidence Registry → Decision Agent → Risk Score → Dashboard.
+The system assists analysts but does not replace fraud detection systems.
+3. Target Users
+Primary users:
+• Fraud analysts
+• AML investigators
+• Payment risk teams
+Secondary users:
+• Consulting firms
+• Fraud operations leaders
+• Fintech risk teams
+4. Product Scope
+Included in MVP:
+• Investigation workflow automation
+• CrewAI investigation agents
+• Graph‑based network analysis
+• Fraud typology identification
+• Deterministic risk scoring
+• Investigation dashboard
+Excluded:
+• Real bank integrations
+• Authentication systems
+• Streaming fraud detection
+• ML models
+• Scenario generation engines
+5. System Architecture
+Datasets → Feature Builder → EnrichedTransactionRecord → InvestigationState
+→ CrewAI Agents (Pattern, Behaviour, Network, Typology, Decision)
+→ Evidence Registry → Fraud Score → Analyst Dashboard
+6. Agent Autonomy Model
+Agents operate with bounded autonomy.
+They reason within a defined domain but cannot modify the workflow, spawn new agents,
+or change scoring logic.
+Agents run sequentially under CrewAI orchestration.
+7. Technology Stack
+Backend: Python, FastAPI
+Agents: CrewAI
+Data Processing: Pandas, NumPy
+Graph Analysis: NetworkX
+Frontend: HTML, CSS, JavaScript
+Testing: PyTest
+Deployment: Docker, HuggingFace Spaces
+8. Environment Configuration
+Secrets must be loaded from a .env file.
+OPENAI_API_KEY must be read from environment variables using python‑dotenv.
+Keys must never be hardcoded.
+9. Repository Structure
+fraud_copilot/
+ data/
+ frontend/
+ agents/
+ services/
+ models/
+ tests/
+ app.py
+ requirements.txt
+ Dockerfile
+10. Datasets
+PaySim: core transaction dataset.
+IEEE Fraud Detection: device and identity signals.
+BankSim: behavioural transaction modelling.
+IP/Geo dataset: geographic enrichment.
+11. Dataset Fusion Design
+Datasets are not merged into one table.
+A deterministic feature builder produces an EnrichedTransactionRecord per investigation.
+12. EnrichedTransactionRecord Schema
+transaction_id
+account_id
+beneficiary_id
+amount
+transaction_type
+timestamp
+device_id
+country
+account_age_days
+transaction_velocity_10min
+merchant_category
+device_risk_score
+13. Investigation State Model
+investigation_id
+transaction_id
+account_id
+status
+base_transaction
+evidence
+risk_score
+typology
+recommendation
+confidence
+14. Evidence Registry Schema
+source_agent
+signal_code
+severity
+summary
+details
+15. Fraud Signals
+HIGH_VELOCITY
+NEW_DEVICE
+NEW_COUNTRY
+LINKED_FRAUD_ACCOUNT
+IMPOSSIBLE_TRAVEL
+MULE_PATTERN
+16. Investigation Agents
+PatternAgent – velocity anomalies and transfer spikes
+BehaviourAgent – device and location anomalies
+NetworkAgent – graph analysis and account links
+TypologyAgent – fraud pattern classification
+DecisionAgent – final score and recommendation
+17. Fraud Risk Scoring
+Signal weights example:
+HIGH_VELOCITY = 25
+NEW_DEVICE = 20
+NEW_COUNTRY = 15
+LINKED_FRAUD_ACCOUNT = 30
+Score = min(sum(weights)/100, 0.99)
+18. Investigation Pipeline
+transaction_id → feature builder → InvestigationState → CrewAI agents
+→ evidence registry → scoring engine → API response
+19. API Design
+POST /investigate
+GET /alerts
+GET /metrics
+20. Dashboard Requirements
+Display transaction details, investigation results, evidence signals,
+network analysis and supporting transactions.
+21. Implementation Plan
+Stage 1: Project scaffolding
+Stage 2: Data models
+Stage 3: Dataset loader
+Stage 4: Feature builder
+Stage 5: Evidence registry
+Stage 6: Scoring engine
+Stage 7: CrewAI agents
+Stage 8: Investigation pipeline
+Stage 9: API layer
+Stage 10: Frontend integration
+Stage 11: End‑to‑end testing
+22. Testing Framework
+Use pytest.
+Tests must validate models, feature builder, scoring engine, agents,
+pipeline and API endpoints.
+23. Non‑Functional Requirements
+Code must be modular, include docstrings, avoid hardcoded paths,
+handle malformed data and support Docker deployment.
+24. Definition of Done
+Investigation pipeline executes successfully.
+CrewAI agents generate structured evidence.
+Risk score and recommendation returned.
+Dashboard displays results.
+All tests pass.
+Docker deployment works.
+25. Alert Queue Seeding
+Backend must expose GET /alerts returning at least 25 realistic fraud alerts
+to populate the dashboard queue for demo purposes.
