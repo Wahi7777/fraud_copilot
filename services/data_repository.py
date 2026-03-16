@@ -229,6 +229,10 @@ class DataRepository:
             self._fraud_labels[tx_id] = fraud_label
 
         self._paysim_df = pd.DataFrame.from_records(records)
+        print(
+            f"[DataRepository] Loaded PaySim rows={len(self._paysim_df)} "
+            f"fraud_positive={self._paysim_df['is_fraud'].sum() if not self._paysim_df.empty else 0}"
+        )
         return self._paysim_df
 
     def load_ieee_identity(self) -> pd.DataFrame:
@@ -362,5 +366,9 @@ class DataRepository:
             self._fraud_labels[tx_id] = fraud_label
 
         self._ieee_tx_df = pd.DataFrame.from_records(records)
+        print(
+            f"[DataRepository] Loaded IEEE tx rows={len(self._ieee_tx_df)} "
+            f"fraud_positive={self._ieee_tx_df['is_fraud'].sum() if not self._ieee_tx_df.empty else 0}"
+        )
         return self._ieee_tx_df
 

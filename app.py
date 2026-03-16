@@ -321,6 +321,7 @@ def _get_alert_catalog() -> List[Dict[str, Any]]:
     """
     repo = _get_repository_singleton()
     records = repo.get_alert_queue(limit=5000)
+    logger.info("[ALERTS] queue_source_records=%d", len(records))
 
     catalog: List[Dict[str, Any]] = []
     for tx in records:
@@ -350,6 +351,7 @@ def _get_alert_catalog() -> List[Dict[str, Any]]:
                 "recommendation": recommendation,
             }
         )
+    logger.info("[ALERTS] catalog_size=%d", len(catalog))
     return catalog
 
 
@@ -359,6 +361,7 @@ def _get_metrics_summary() -> Dict[str, Any]:
     df = repo.load_paysim()
     total = int(len(df))
     flagged = int(df["is_fraud"].sum()) if not df.empty else 0
+    logger.info("[METRICS] paysim_rows=%d flagged=%d", total, flagged)
 
     high_risk_alerts = flagged
     escalated_cases = max(1, flagged // 10) if flagged else 0
@@ -434,10 +437,23 @@ def create_app() -> FastAPI:
         Serve the main dashboard HTML for the root path.
         Falls back to a simple JSON message if the file is missing.
         """
-        index_path = Path(__file__).parent / "frontend" / "index.html"
+        index_path = frontend_dir / "index.html"
         if index_path.exists():
             return FileResponse(index_path)
         return {"status": "ok", "message": "Fraud Co-Pilot backend running."}
+
+    @app.get("/app.js", include_in_schema=False)
+    def serve_app_js() -> Any:
+        """
+        Serve the main frontend JavaScript bundle at /app.js for production.
+
+        This ensures that existing script tags pointing to /app.js continue to
+        work even when static assets are mounted under /frontend.
+        """
+        app_js = frontend_dir / "app.js"
+        if app_js.exists():
+            return FileResponse(app_js, media_type="application/javascript")
+        raise HTTPException(status_code=404, detail="app.js not found")
 
     # ------------------------------------------------------------------ #
     # Lightweight dependency providers

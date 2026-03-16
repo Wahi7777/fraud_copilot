@@ -25,22 +25,58 @@ def _read_head(path: Path, n: int) -> pd.DataFrame:
 def create_paysim_sample() -> None:
     src = DATA_DIR / PAYSIM_FILE
     dst = SAMPLE_DIR / PAYSIM_FILE
-    df = _read_head(src, SAMPLE_ROWS)
-    if df.empty:
-        print("[create_vercel_sample] Skipping PaySim sample – source is empty or missing.")
+    if not src.exists():
+        print(f"[create_vercel_sample] Skipping PaySim sample – source missing at {src}")
         return
+    print(f"[create_vercel_sample] Reading full PaySim from {src} (this may take a moment)...")
+    df = pd.read_csv(src)
+    if df.empty or "isFraud" not in df.columns:
+        print("[create_vercel_sample] PaySim source has no rows or no isFraud column; using head-only sample.")
+        df_sample = df.head(SAMPLE_ROWS)
+    else:
+        fraud_df = df[df["isFraud"] == 1]
+        non_fraud_df = df[df["isFraud"] == 0]
+        n_fraud = min(len(fraud_df), SAMPLE_ROWS // 4) or min(len(fraud_df), 1000)
+        n_non_fraud = min(len(non_fraud_df), SAMPLE_ROWS - n_fraud)
+        fraud_part = fraud_df.head(n_fraud)
+        non_fraud_part = non_fraud_df.head(n_non_fraud)
+        df_sample = pd.concat([fraud_part, non_fraud_part], ignore_index=True)
+        print(
+            f"[create_vercel_sample] PaySim source rows={len(df)} fraud_total={len(fraud_df)} "
+            f"sample_rows={len(df_sample)} sample_fraud={len(fraud_part)} sample_non_fraud={len(non_fraud_part)}"
+        )
     dst.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(dst, index=False)
-    print(f"[create_vercel_sample] Wrote PaySim sample to {dst} with {len(df)} rows")
+    df_sample.to_csv(dst, index=False)
+    print(f"[create_vercel_sample] Wrote PaySim sample to {dst} with {len(df_sample)} rows")
 
 
 def create_ieee_sample() -> None:
     tx_src = DATA_DIR / IEEE_TX_FILE
     id_src = DATA_DIR / IEEE_ID_FILE
-    tx_df = _read_head(tx_src, SAMPLE_ROWS)
-    if tx_df.empty:
-        print("[create_vercel_sample] Skipping IEEE samples – transaction source is empty or missing.")
+    if not tx_src.exists():
+        print(f"[create_vercel_sample] Skipping IEEE samples – transaction source missing at {tx_src}")
         return
+    print(f"[create_vercel_sample] Reading IEEE transactions from {tx_src}...")
+    tx_full = pd.read_csv(tx_src)
+    if tx_full.empty:
+        print("[create_vercel_sample] IEEE transaction source is empty; skipping.")
+        return
+
+    if "isFraud" in tx_full.columns:
+        fraud_tx = tx_full[tx_full["isFraud"] == 1]
+        non_fraud_tx = tx_full[tx_full["isFraud"] == 0]
+        n_fraud = min(len(fraud_tx), SAMPLE_ROWS // 4) or min(len(fraud_tx), 1000)
+        n_non_fraud = min(len(non_fraud_tx), SAMPLE_ROWS - n_fraud)
+        fraud_part = fraud_tx.head(n_fraud)
+        non_fraud_part = non_fraud_tx.head(n_non_fraud)
+        tx_df = pd.concat([fraud_part, non_fraud_part], ignore_index=True)
+        print(
+            f"[create_vercel_sample] IEEE tx rows={len(tx_full)} fraud_total={len(fraud_tx)} "
+            f"sample_rows={len(tx_df)} sample_fraud={len(fraud_part)} sample_non_fraud={len(non_fraud_part)}"
+        )
+    else:
+        print("[create_vercel_sample] IEEE tx has no isFraud column; using head-only sample.")
+        tx_df = tx_full.head(SAMPLE_ROWS)
 
     # Filter identity rows to the sampled TransactionID set when possible.
     if id_src.exists():
