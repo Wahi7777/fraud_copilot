@@ -8,7 +8,27 @@ from datetime import datetime
 from decimal import Decimal
 import re
 
-from crewai import Agent as CrewAgent, Crew, Process, Task as CrewTask
+try:
+    from crewai import Agent as CrewAgent, Crew, Process, Task as CrewTask
+except ImportError:  # pragma: no cover - lightweight fallback for environments without crewai
+    class Process:
+        sequential = "sequential"
+
+    class CrewAgent:  # type: ignore[no-redef]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.args = args
+            self.kwargs = kwargs
+
+    class CrewTask:  # type: ignore[no-redef]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.args = args
+            self.kwargs = kwargs
+
+    class Crew:  # type: ignore[no-redef]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.args = args
+            self.kwargs = kwargs
+
 from fastapi.encoders import jsonable_encoder
 
 from agents.behaviour_agent import BehaviourAgent
