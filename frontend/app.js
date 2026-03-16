@@ -1,5 +1,7 @@
 (() => {
-  const API_BASE = window.API_BASE || "http://127.0.0.1:7861";
+  // In production (Vercel) we want same-origin API calls by default.
+  // window.API_BASE can still override this for local development.
+  const API_BASE = typeof window !== "undefined" && window.API_BASE ? window.API_BASE : "";
   const DEV_FALLBACK_MODAL = Boolean(window.DEV_FALLBACK_MODAL);
   const DEV_DEBUG_UI = Boolean(window.DEV_DEBUG_UI);
 
