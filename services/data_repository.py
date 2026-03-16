@@ -126,13 +126,34 @@ class DataRepository:
         Records are ordered by fraud label (1 before 0) and then by timestamp
         descending to surface the most recent risky activity.
         """
+        # Ensure underlying datasets are loaded at least once. This is cheap on
+        # repeat calls thanks to internal caching and is important in deployed
+        # environments where no other path may have initialised the repository
+        # before /alerts is hit.
+        if not self._records:
+            print("[DataRepository] get_alert_queue: _records empty, loading datasets")
+            try:
+                self.load_paysim()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                print(f"[DataRepository] get_alert_queue: load_paysim failed: {exc}")
+            try:
+                self.load_ieee_transactions()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                print(f"[DataRepository] get_alert_queue: load_ieee_transactions failed: {exc}")
+
         items: list[tuple[EnrichedTransactionRecord, int]] = []
         for tx_id, record in self._records.items():
             label = self._fraud_labels.get(tx_id, 0)
             items.append((record, label))
 
         items.sort(key=lambda pair: (pair[1], pair[0].timestamp), reverse=True)
-        return [r for r, _ in items[:limit]]
+        result = [r for r, _ in items[:limit]]
+        print(
+            f"[DataRepository] get_alert_queue: records={len(self._records)} "
+            f"labels={sum(self._fraud_labels.values()) if self._fraud_labels else 0} "
+            f"returned_alerts={len(result)}"
+        )
+        return result
 
     def iter_records_with_labels(
         self, limit: Optional[int] = None

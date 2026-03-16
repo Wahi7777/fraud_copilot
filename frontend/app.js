@@ -757,6 +757,17 @@
   function renderAlerts() {
     if (!alertsTbody) return;
     alertsTbody.innerHTML = "";
+    if (!alertOrder.length) {
+      const emptyRow = document.createElement("tr");
+      emptyRow.className = "bg-white";
+      emptyRow.innerHTML = `
+        <td class="px-6 py-6 text-center text-sm text-secondaryText" colspan="8">
+          No alerts available. If this is a demo deployment, ensure the sample dataset is present and try refreshing.
+        </td>
+      `;
+      alertsTbody.appendChild(emptyRow);
+    }
+
     alertOrder.forEach((alertId, idx) => {
       const item = alertsById.get(alertId);
       if (!item) return;
