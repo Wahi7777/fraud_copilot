@@ -40,13 +40,24 @@ class DataRepository:
         effective_config = config or DataRepositoryConfig()
         mode = os.getenv("DATA_MODE", "").strip().lower()
         override_dir = os.getenv("DATA_DIR") or os.getenv("PAYSIM_DATA_DIR")
-        data_dir = effective_config.data_dir
+        base_dir = effective_config.data_dir
+        data_dir = base_dir
+
         if override_dir:
             data_dir = Path(override_dir)
         elif mode == "sample":
-            # Default sample-mode directory for Vercel or constrained deployments.
-            data_dir = data_dir / "vercel_sample"
+            data_dir = base_dir / "vercel_sample"
+        elif mode == "full":
+            data_dir = base_dir
+        else:
+            # Auto-detect sample mode when full datasets are missing but vercel_sample exists.
+            paysim_full = base_dir / "PS_20174392719_1491204439457_log.csv"
+            paysim_sample = base_dir / "vercel_sample" / "PS_20174392719_1491204439457_log.csv"
+            if not paysim_full.exists() and paysim_sample.exists():
+                data_dir = base_dir / "vercel_sample"
+
         self.config = DataRepositoryConfig(data_dir=data_dir, max_rows=effective_config.max_rows)
+        print(f"[DataRepository] init data_dir={self.config.data_dir} mode={mode or 'auto'}")
 
         # Canonical EnrichedTransactionRecord storage and labels
         self._records: dict[str, EnrichedTransactionRecord] = {}

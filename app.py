@@ -417,7 +417,9 @@ def create_app() -> FastAPI:
     )
 
     # Optional static mount for assets under /frontend (JS, CSS, images, etc.).
-    app.mount("/frontend", StaticFiles(directory="frontend"), name="frontend")
+    frontend_dir = Path(__file__).parent / "frontend"
+    if frontend_dir.exists():
+        app.mount("/frontend", StaticFiles(directory=frontend_dir), name="frontend")
 
     @app.get("/health", tags=["system"])
     def health_check() -> dict:
@@ -432,7 +434,7 @@ def create_app() -> FastAPI:
         Serve the main dashboard HTML for the root path.
         Falls back to a simple JSON message if the file is missing.
         """
-        index_path = Path("frontend") / "index.html"
+        index_path = Path(__file__).parent / "frontend" / "index.html"
         if index_path.exists():
             return FileResponse(index_path)
         return {"status": "ok", "message": "Fraud Co-Pilot backend running."}
