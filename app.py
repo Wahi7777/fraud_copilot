@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from models import EnrichedTransactionRecord
@@ -401,10 +402,6 @@ def create_app() -> FastAPI:
             "supporting services as defined in the MVP PRD."
         ),
     )
-    logger.warning(
-        "[DECISION DIAGNOSIS] prior queue logic conflated workflow status with recommendation and frontend risk-band mapping overrode nuanced backend outputs"
-    )
-
     # CORS configuration – relaxed for MVP/demo, can be tightened later
     app.add_middleware(
         CORSMiddleware,
@@ -416,6 +413,9 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
+
+    # Serve the SPA dashboard from the frontend directory so `/` loads index.html.
+    app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
 
     @app.get("/health", tags=["system"])
     def health_check() -> dict:
