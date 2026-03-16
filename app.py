@@ -12,6 +12,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from models import EnrichedTransactionRecord
@@ -414,8 +415,8 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Serve the SPA dashboard from the frontend directory so `/` loads index.html.
-    app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+    # Optional static mount for assets under /frontend (JS, CSS, images, etc.).
+    app.mount("/frontend", StaticFiles(directory="frontend"), name="frontend")
 
     @app.get("/health", tags=["system"])
     def health_check() -> dict:
@@ -423,6 +424,17 @@ def create_app() -> FastAPI:
         Lightweight health endpoint used by tests and orchestrators.
         """
         return {"status": "ok"}
+
+    @app.get("/", include_in_schema=False)
+    def serve_root() -> Any:
+        """
+        Serve the main dashboard HTML for the root path.
+        Falls back to a simple JSON message if the file is missing.
+        """
+        index_path = Path("frontend") / "index.html"
+        if index_path.exists():
+            return FileResponse(index_path)
+        return {"status": "ok", "message": "Fraud Co-Pilot backend running."}
 
     # ------------------------------------------------------------------ #
     # Lightweight dependency providers

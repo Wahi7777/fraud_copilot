@@ -4,6 +4,8 @@ __pycache__/
 *.pyc
 
 
-# Large datasets
+# Large datasets (keep full CSVs ignored, but allow committed vercel_sample)
 data/
 *.csv
+!data/vercel_sample/
+!data/vercel_sample/*.csv

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Iterable
+import os
 
 import pandas as pd
 
@@ -15,6 +16,7 @@ class DataRepositoryConfig:
     """
     Configuration for loading local CSV datasets.
 
+    `data_dir` may be overridden via environment variables (see below) and
     `max_rows` is primarily intended for tests and local development so that
     we don't need to load entire large CSVs to validate the pipeline.
     """
@@ -35,7 +37,16 @@ class DataRepository:
     """
 
     def __init__(self, config: DataRepositoryConfig | None = None) -> None:
-        self.config = config or DataRepositoryConfig()
+        effective_config = config or DataRepositoryConfig()
+        mode = os.getenv("DATA_MODE", "").strip().lower()
+        override_dir = os.getenv("DATA_DIR") or os.getenv("PAYSIM_DATA_DIR")
+        data_dir = effective_config.data_dir
+        if override_dir:
+            data_dir = Path(override_dir)
+        elif mode == "sample":
+            # Default sample-mode directory for Vercel or constrained deployments.
+            data_dir = data_dir / "vercel_sample"
+        self.config = DataRepositoryConfig(data_dir=data_dir, max_rows=effective_config.max_rows)
 
         # Canonical EnrichedTransactionRecord storage and labels
         self._records: dict[str, EnrichedTransactionRecord] = {}
@@ -148,6 +159,7 @@ class DataRepository:
         path = self.config.data_dir / "PS_20174392719_1491204439457_log.csv"
         if not path.exists():
             self._paysim_df = pd.DataFrame()
+            print(f"[DataRepository] PaySim file not found at {path}, returning empty DataFrame.")
             return self._paysim_df
 
         kwargs: dict = {}
@@ -218,6 +230,7 @@ class DataRepository:
         path = self.config.data_dir / "train_identity.csv"
         if not path.exists():
             self._ieee_id_df = pd.DataFrame()
+            print(f"[DataRepository] IEEE identity file not found at {path}, returning empty DataFrame.")
             return self._ieee_id_df
 
         kwargs: dict = {}
@@ -248,6 +261,7 @@ class DataRepository:
         tx_path = self.config.data_dir / "train_transaction.csv"
         if not tx_path.exists():
             self._ieee_tx_df = pd.DataFrame()
+            print(f"[DataRepository] IEEE transaction file not found at {tx_path}, returning empty DataFrame.")
             return self._ieee_tx_df
 
         kwargs: dict = {}
