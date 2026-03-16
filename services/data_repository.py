@@ -57,7 +57,10 @@ class DataRepository:
                 data_dir = base_dir / "vercel_sample"
 
         self.config = DataRepositoryConfig(data_dir=data_dir, max_rows=effective_config.max_rows)
-        print(f"[DataRepository] init data_dir={self.config.data_dir} mode={mode or 'auto'}")
+        # Persist the effective mode for downstream decisions (e.g. synthetic
+        # sample generation when vercel_sample CSVs are missing).
+        self.mode = mode or "auto"
+        print(f"[DataRepository] init data_dir={self.config.data_dir} mode={self.mode}")
 
         # Canonical EnrichedTransactionRecord storage and labels
         self._records: dict[str, EnrichedTransactionRecord] = {}
@@ -190,8 +193,17 @@ class DataRepository:
 
         path = self.config.data_dir / "PS_20174392719_1491204439457_log.csv"
         if not path.exists():
+            print(f"[DataRepository] PaySim file not found at {path}")
+            # In sample/auto mode with vercel_sample, fall back to a small
+            # deterministic synthetic sample so demo deployments still surface
+            # realistic alerts and metrics even if CSVs are not present.
+            if self.config.data_dir.name == "vercel_sample" or self.mode == "sample":
+                print("[DataRepository] Using synthetic PaySim sample for demo mode.")
+                self._build_synthetic_paysim_sample()
+                return self._paysim_df
+
             self._paysim_df = pd.DataFrame()
-            print(f"[DataRepository] PaySim file not found at {path}, returning empty DataFrame.")
+            print("[DataRepository] Returning empty PaySim DataFrame (no sample mode).")
             return self._paysim_df
 
         kwargs: dict = {}
@@ -255,6 +267,65 @@ class DataRepository:
             f"fraud_positive={self._paysim_df['is_fraud'].sum() if not self._paysim_df.empty else 0}"
         )
         return self._paysim_df
+
+    def _build_synthetic_paysim_sample(self) -> None:
+        """
+        Build a small deterministic PaySim-like sample in-memory.
+
+        This is only used in demo/sample mode when CSVs are not available
+        (e.g. Vercel deployments without full datasets). It populates both the
+        pandas DataFrame and the in-memory EnrichedTransactionRecord store.
+        """
+        base_dt = datetime(2024, 1, 1, 9, 0, 0)
+        records_df: list[dict] = []
+
+        # Create 40 non-fraud and 10 fraud transactions deterministically.
+        total = 50
+        fraud_every = 5  # every 5th transaction is fraud
+        for idx in range(total):
+            tx_id = f"SYN-PAYSIM-{idx:05d}"
+            account_id = f"SYN-ACC-{1000 + (idx % 7)}"
+            beneficiary_id = f"SYN-BEN-{2000 + (idx % 11)}"
+            amount = 50.0 + (idx * 25.0)
+            tx_type = "TRANSFER"
+            timestamp = base_dt + timedelta(minutes=idx * 7)
+            fraud_label = 1 if idx % fraud_every == 0 else 0
+
+            records_df.append(
+                {
+                    "transaction_id": tx_id,
+                    "account_id": account_id,
+                    "beneficiary_id": beneficiary_id,
+                    "amount": amount,
+                    "transaction_type": tx_type,
+                    "timestamp": timestamp,
+                    "is_fraud": fraud_label,
+                    "dataset": "synthetic_paysim",
+                }
+            )
+
+            etr = EnrichedTransactionRecord(
+                transaction_id=tx_id,
+                account_id=account_id,
+                beneficiary_id=beneficiary_id,
+                amount=amount,
+                transaction_type=tx_type,
+                timestamp=timestamp,
+                device_id=None,
+                country=None,
+                account_age_days=None,
+                transaction_velocity_10min=None,
+                merchant_category=None,
+                device_risk_score=None,
+            )
+            self._records[tx_id] = etr
+            self._fraud_labels[tx_id] = fraud_label
+
+        self._paysim_df = pd.DataFrame.from_records(records_df)
+        print(
+            f"[DataRepository] Built synthetic PaySim sample rows={len(self._paysim_df)} "
+            f"fraud_positive={self._paysim_df['is_fraud'].sum()}"
+        )
 
     def load_ieee_identity(self) -> pd.DataFrame:
         """
